@@ -1,7 +1,7 @@
 
 import * as React from 'react';
 import { useState, useEffect, useRef } from 'react';
-import { Sparkles, AlertCircle, Play, RotateCcw, Clipboard, CheckCircle2, Copy, Check, BookOpen, Wrench, X, Monitor, Zap, Settings, MessageSquare, Plus, Trash2, Send, Sidebar as SidebarIcon, Layout, LayoutTemplate, FileCode, FolderOpen, FilePlus } from 'lucide-react';
+import { Sparkles, AlertCircle, Play, RotateCcw, Clipboard, CheckCircle2, Copy, Check, BookOpen, Wrench, X, Monitor, Zap, Settings, MessageSquare, Plus, Trash2, Send, Sidebar as SidebarIcon, Layout, LayoutTemplate, FileCode, FolderOpen, FilePlus, Code2, ArrowLeft } from 'lucide-react';
 import Header from './components/Header';
 import MarkdownRenderer from './components/MarkdownRenderer';
 import CodeEditor from './components/CodeEditor';
@@ -46,6 +46,9 @@ const App: React.FC = () => {
   
   const [showSettings, setShowSettings] = useState<boolean>(false);
   const [isSidebarOpen, setIsSidebarOpen] = useState<boolean>(true);
+  
+  // New State for Interactive Mode Layout
+  const [isEditorOpen, setIsEditorOpen] = useState<boolean>(false); 
 
   // Sessions / Projects
   const [sessions, setSessions] = useState<Session[]>(() => {
@@ -83,7 +86,18 @@ const App: React.FC = () => {
     if (chatContainerRef.current) {
       chatContainerRef.current.scrollTop = chatContainerRef.current.scrollHeight;
     }
-  }, [activeSession.messages, isLoading, viewMode]);
+  }, [activeSession.messages, isLoading, viewMode, isEditorOpen]);
+
+  // Reset Editor visibility when switching modes
+  useEffect(() => {
+    if (viewMode === 'classic') {
+      setIsEditorOpen(true);
+      setIsSidebarOpen(false);
+    } else {
+      setIsEditorOpen(false); // Default to chat only in interactive mode
+      setIsSidebarOpen(true);
+    }
+  }, [viewMode]);
 
   // --- LOGIC ---
 
@@ -123,6 +137,8 @@ const App: React.FC = () => {
       
       const updatedFiles = [...activeSession.files, newFile];
       updateActiveSession({ files: updatedFiles, activeFileId: newFile.id });
+      // If in chat mode, ensure editor is open to see the new file
+      if (viewMode === 'chat') setIsEditorOpen(true);
     }
   };
 
@@ -142,6 +158,7 @@ const App: React.FC = () => {
     setSessions(prev => [newSession, ...prev]);
     setCurrentSessionId(newSession.id);
     setInputInstruction('');
+    if (viewMode === 'chat' && window.innerWidth < 1024) setIsSidebarOpen(false);
   };
 
   const handleDeleteSession = (e: React.MouseEvent, id: string) => {
@@ -250,7 +267,7 @@ const App: React.FC = () => {
        // C. Add Tool Output to history
        const toolOutputMsg: ChatMessage = {
          id: crypto.randomUUID(),
-         role: 'user', // System feedback acts as user role in this simple schema or 'function' role if supported
+         role: 'user', 
          content: `Tool Execution Results:\n${results.join('\n')}`,
          timestamp: Date.now(),
          isToolCall: true
@@ -305,7 +322,8 @@ const App: React.FC = () => {
 
   const lastModelMessage = [...activeSession.messages].reverse().find(m => m.role === 'model');
 
-  // RENDER HELPERS
+  // --- COMPONENT RENDERERS ---
+
   const renderSidebar = () => (
     <div 
       className={`
@@ -363,7 +381,7 @@ const App: React.FC = () => {
             {activeSession.files.map(file => (
                 <div 
                   key={file.id} 
-                  onClick={() => updateActiveSession({ activeFileId: file.id })}
+                  onClick={() => { updateActiveSession({ activeFileId: file.id }); if(viewMode === 'chat') setIsEditorOpen(true); }}
                   className={`flex items-center justify-between px-2 py-1.5 rounded text-xs cursor-pointer ${
                      activeSession.activeFileId === file.id ? `${theme.accent} bg-white/5` : `${theme.textMuted} hover:text-white`
                   }`}
@@ -395,9 +413,8 @@ const App: React.FC = () => {
         />
       )}
 
-      {/* Render Sidebar Logic */}
-      {viewMode === 'chat' ? renderSidebar() : null}
-      {/* In Classic mode, we can show a drawer or just put files in left panel. For now, keep files in left panel toolbar */}
+      {/* Sidebar - Always rendered but conditionally visible via CSS/State */}
+      {viewMode === 'chat' && renderSidebar()}
 
       {/* MAIN CONTENT */}
       <div className="flex-grow flex flex-col min-w-0 h-full relative">
@@ -409,30 +426,42 @@ const App: React.FC = () => {
 
         <div className="flex-grow flex flex-col lg:flex-row overflow-hidden relative">
           
-          {/* LEFT: CODE EDITOR & FILE TABS */}
-          <div className={`w-full lg:w-1/2 flex flex-col border-b lg:border-b-0 lg:border-r ${theme.border} h-1/2 lg:h-auto`}>
+          {/* LEFT: CODE EDITOR / FILE WORKSPACE */}
+          {/* In Classic Mode: Always Visible (Top Half Mobile / Left Half Desktop) */}
+          {/* In Chat Mode: Visible only if isEditorOpen (Tabs Mobile / Split Desktop) */}
+          <div 
+            className={`
+              flex flex-col border-b lg:border-b-0 lg:border-r ${theme.border}
+              transition-all duration-300
+              ${viewMode === 'classic' 
+                ? 'w-full h-1/2 lg:h-auto lg:w-1/2' 
+                : isEditorOpen 
+                  ? 'w-full h-full lg:w-1/2 absolute lg:relative z-20 lg:z-0 bg-slate-900 lg:bg-transparent' 
+                  : 'hidden lg:w-0'
+              }
+            `}
+          >
              
              {/* Toolbar / File Tabs */}
              <div className={`${theme.bgPanel} border-b ${theme.border} flex items-center justify-between h-12 flex-shrink-0 px-2`}>
                 <div className="flex items-center gap-1 overflow-x-auto no-scrollbar mask-gradient-right max-w-[70%]">
-                   {/* Sidebar Toggle */}
-                   <button 
-                       onClick={() => setIsSidebarOpen(!isSidebarOpen)} 
-                       className={`p-2 mr-2 rounded hover:bg-white/5 ${theme.textMuted} lg:hidden`}
-                   >
-                        <SidebarIcon className="w-4 h-4" />
-                   </button>
-                   
-                   {/* Desktop Sidebar Toggle for Chat Mode */}
+                   {/* Mobile Back Button (Chat Mode Only) */}
                    {viewMode === 'chat' && (
+                     <button onClick={() => setIsEditorOpen(false)} className="lg:hidden p-2 mr-2 hover:bg-white/10 rounded">
+                        <ArrowLeft className="w-4 h-4" />
+                     </button>
+                   )}
+
+                   {/* Sidebar Toggle (Classic Mobile Only) */}
+                   {viewMode === 'classic' && (
                      <button 
                        onClick={() => setIsSidebarOpen(!isSidebarOpen)} 
-                       className={`p-2 mr-2 rounded hover:bg-white/5 ${theme.textMuted} hidden lg:block`}
+                       className={`p-2 mr-2 rounded hover:bg-white/5 ${theme.textMuted} lg:hidden`}
                      >
                         <SidebarIcon className="w-4 h-4" />
                      </button>
                    )}
-
+                   
                    {/* File Tabs */}
                    {activeSession.files.map(file => (
                        <button
@@ -488,11 +517,13 @@ const App: React.FC = () => {
                       <span>{activeFile.language}</span>
                       <span className="opacity-30">|</span>
                       <span>{wordCount.toLocaleString()} words</span>
+                      <span className="opacity-30">|</span>
+                      <span>~{tokenCount.toLocaleString()} tokens</span>
                   </div>
                   {highCapacity && <span className="text-emerald-500 flex items-center gap-1"><Zap className="w-3 h-3"/> HC Active</span>}
              </div>
 
-             {/* CLASSIC MODE ONLY: Input Controls */}
+             {/* CLASSIC MODE ONLY: Input Controls (Hidden in Chat Mode to look like pure file editor) */}
              {viewMode === 'classic' && (
                <div className={`p-4 border-t ${theme.border} ${theme.bgPanel} flex-shrink-0`}>
                  <div className="flex gap-2 mb-3">
@@ -539,140 +570,164 @@ const App: React.FC = () => {
              )}
           </div>
 
-          {/* RIGHT PANEL */}
-          {viewMode === 'classic' ? (
-            /* CLASSIC INTERFACE */
-            <div className={`flex-grow flex flex-col w-full lg:w-1/2 ${theme.bgPanel} relative h-1/2 lg:h-auto`}>
-               <div className={`px-4 h-12 border-b ${theme.border} ${theme.bgPanelHeader} flex items-center justify-between flex-shrink-0`}>
-                  <h3 className={`font-semibold ${theme.textMain} flex items-center gap-2 text-sm`}>
-                     <Sparkles className={`w-4 h-4 ${theme.accent}`} />
-                     <span>Analysis Result</span>
-                  </h3>
-                  {lastModelMessage && (
-                    <button 
-                      onClick={() => handleCopyAll(lastModelMessage.content)}
-                      className={`flex items-center gap-1.5 px-3 py-1.5 rounded-full text-xs font-medium transition-colors ${copied ? 'bg-emerald-500/10 text-emerald-400' : `${theme.textMuted} hover:text-white hover:bg-white/10`}`}
-                    >
-                      {copied ? <Check className="w-3.5 h-3.5" /> : <Copy className="w-3.5 h-3.5" />}
-                      {copied ? 'Copied' : 'Copy All'}
-                    </button>
-                  )}
-               </div>
-               <div className="flex-grow overflow-y-auto p-6 custom-scrollbar">
-                  {isLoading ? (
-                    <div className="space-y-4 animate-pulse">
-                      <div className={`h-4 w-3/4 rounded ${theme.bgPanelHeader}`}></div>
-                      <div className={`h-4 w-1/2 rounded ${theme.bgPanelHeader}`}></div>
-                      <div className={`h-32 w-full rounded ${theme.bgPanelHeader}`}></div>
-                    </div>
-                  ) : lastModelMessage ? (
-                    <MarkdownRenderer content={lastModelMessage.content} theme={theme} />
-                  ) : (
-                    <div className={`flex flex-col items-center justify-center h-full opacity-40 text-center p-8 ${theme.textMuted}`}>
-                       <Layout className="w-12 h-12 mb-4 opacity-50" />
-                       <p>Ready to analyze. <br/>Use the controls on the left.</p>
-                    </div>
-                  )}
-               </div>
-            </div>
-          ) : (
-            /* CHAT INTERFACE */
-            <div className={`flex-grow flex flex-col w-full lg:w-1/2 bg-black/20 h-1/2 lg:h-auto border-l ${theme.border}`}>
-              <div className={`${theme.bgPanel} px-4 h-12 border-b ${theme.border} flex items-center justify-between flex-shrink-0`}>
-                 <div className="flex items-center gap-3 lg:gap-2">
-                   <button onClick={() => setIsSidebarOpen(!isSidebarOpen)} className="lg:hidden p-1.5 rounded hover:bg-white/5">
-                      <SidebarIcon className="w-4 h-4" />
-                   </button>
-                   <MessageSquare className={`hidden lg:block w-4 h-4 ${theme.accent}`} />
-                   <span className={`text-sm font-semibold ${theme.textMain} truncate max-w-[200px]`}>
-                      {activeSession.title}
-                   </span>
+          {/* RIGHT PANEL: RESULT OR CHAT */}
+          {/* Classic: Result View (Bottom Mobile / Right Desktop) */}
+          {/* Chat: Full Chat View (Unless Editor is Open on Mobile) */}
+          <div 
+             className={`
+               flex-col relative
+               ${viewMode === 'classic' 
+                 ? `flex w-full h-1/2 lg:h-auto lg:w-1/2 ${theme.bgPanel}`
+                 : `flex ${isEditorOpen ? 'hidden lg:flex lg:w-1/2' : 'w-full'} bg-black/20 h-full border-l ${theme.border}`
+               }
+             `}
+          >
+             
+             {viewMode === 'classic' ? (
+                /* CLASSIC RESULT VIEW */
+               <>
+                 <div className={`px-4 h-12 border-b ${theme.border} ${theme.bgPanelHeader} flex items-center justify-between flex-shrink-0`}>
+                    <h3 className={`font-semibold ${theme.textMain} flex items-center gap-2 text-sm`}>
+                       <Sparkles className={`w-4 h-4 ${theme.accent}`} />
+                       <span>Analysis Result</span>
+                    </h3>
+                    {lastModelMessage && (
+                      <button 
+                        onClick={() => handleCopyAll(lastModelMessage.content)}
+                        className={`flex items-center gap-1.5 px-3 py-1.5 rounded-full text-xs font-medium transition-colors ${copied ? 'bg-emerald-500/10 text-emerald-400' : `${theme.textMuted} hover:text-white hover:bg-white/10`}`}
+                      >
+                        {copied ? <Check className="w-3.5 h-3.5" /> : <Copy className="w-3.5 h-3.5" />}
+                        {copied ? 'Copied' : 'Copy All'}
+                      </button>
+                    )}
                  </div>
-                 <div className={`text-xs ${theme.textMuted} px-2 py-1 rounded bg-white/5`}>
-                    {activeSession.messages.length} messages
+                 <div className="flex-grow overflow-y-auto p-6 custom-scrollbar">
+                    {isLoading ? (
+                      <div className="space-y-4 animate-pulse">
+                        <div className={`h-4 w-3/4 rounded ${theme.bgPanelHeader}`}></div>
+                        <div className={`h-4 w-1/2 rounded ${theme.bgPanelHeader}`}></div>
+                        <div className={`h-32 w-full rounded ${theme.bgPanelHeader}`}></div>
+                      </div>
+                    ) : lastModelMessage ? (
+                      <MarkdownRenderer content={lastModelMessage.content} theme={theme} />
+                    ) : (
+                      <div className={`flex flex-col items-center justify-center h-full opacity-40 text-center p-8 ${theme.textMuted}`}>
+                         <Layout className="w-12 h-12 mb-4 opacity-50" />
+                         <p>Ready to analyze. <br/>Use the controls on the left.</p>
+                      </div>
+                    )}
                  </div>
-              </div>
-
-              <div ref={chatContainerRef} className="flex-grow overflow-y-auto p-4 space-y-6 custom-scrollbar scroll-smooth">
-                {activeSession.messages.length === 0 ? (
-                  <div className="h-full flex flex-col items-center justify-center opacity-60 text-center p-8">
-                     <div className={`${theme.accentBg} p-6 rounded-full mb-4`}>
-                        <MessageSquare className={`w-10 h-10 ${theme.accent}`} />
+               </>
+             ) : (
+               /* CHAT INTERFACE */
+               <>
+                  <div className={`${theme.bgPanel} px-4 h-12 border-b ${theme.border} flex items-center justify-between flex-shrink-0`}>
+                     <div className="flex items-center gap-3 lg:gap-2">
+                       <button onClick={() => setIsSidebarOpen(!isSidebarOpen)} className="lg:hidden p-1.5 rounded hover:bg-white/5">
+                          <SidebarIcon className="w-4 h-4" />
+                       </button>
+                       <MessageSquare className={`hidden lg:block w-4 h-4 ${theme.accent}`} />
+                       <span className={`text-sm font-semibold ${theme.textMain} truncate max-w-[150px] lg:max-w-[200px]`}>
+                          {activeSession.title}
+                       </span>
                      </div>
-                     <h3 className="text-lg font-medium mb-2">Interactive Mode</h3>
-                     <p className={`text-sm ${theme.textMuted} max-w-sm`}>
-                       The AI can read all files in your project. Ask it to fix bugs, create new files, or explain the codebase.
-                     </p>
-                  </div>
-                ) : (
-                  activeSession.messages.map((msg) => (
-                    <div key={msg.id} className={`flex flex-col ${msg.role === 'user' && !msg.isToolCall ? 'items-end' : 'items-start'}`}>
-                      <div className={`max-w-[95%] lg:max-w-[85%] rounded-2xl px-5 py-4 shadow-sm ${
-                        msg.isToolCall 
-                        ? `${theme.bgPanelHeader} border border-dashed ${theme.border} w-full text-xs font-mono opacity-80`
-                        : msg.role === 'user' 
-                          ? `${theme.accentBg} border border-${theme.accent}/20 rounded-tr-none` 
-                          : `${theme.bgPanel} border ${theme.border} rounded-tl-none`
-                      }`}>
-                        {msg.role === 'user' && !msg.isToolCall ? (
-                          <p className={`whitespace-pre-wrap text-sm ${theme.textMain}`}>{msg.content}</p>
-                        ) : (
-                          <MarkdownRenderer content={msg.content} theme={theme} />
-                        )}
-                      </div>
-                      <span className={`text-[10px] mt-1.5 opacity-40 mx-1 ${theme.textMuted}`}>
-                        {msg.isToolCall ? 'System Action' : (msg.role === 'user' ? 'You' : 'Gemini')} • {new Date(msg.timestamp).toLocaleTimeString([], {hour: '2-digit', minute: '2-digit'})}
-                      </span>
-                    </div>
-                  ))
-                )}
-                
-                {isLoading && (
-                   <div className="flex flex-col items-start animate-pulse">
-                      <div className={`${theme.bgPanel} border ${theme.border} rounded-2xl rounded-tl-none px-5 py-4 flex items-center gap-3`}>
-                         <div className={`w-2 h-2 rounded-full ${theme.accent} bg-current animate-bounce`} style={{animationDelay: '0ms'}}></div>
-                         <div className={`w-2 h-2 rounded-full ${theme.accent} bg-current animate-bounce`} style={{animationDelay: '150ms'}}></div>
-                         <div className={`w-2 h-2 rounded-full ${theme.accent} bg-current animate-bounce`} style={{animationDelay: '300ms'}}></div>
-                      </div>
-                      <span className={`text-[10px] mt-1.5 opacity-40 mx-1 ${theme.textMuted}`}>Thinking & Processing Files...</span>
-                   </div>
-                )}
-                {error && (
-                  <div className="w-full flex justify-center">
-                     <div className="bg-red-500/10 border border-red-500/20 text-red-400 px-4 py-2 rounded-lg text-sm flex items-center gap-2">
-                        <AlertCircle className="w-4 h-4" /> {error}
+                     <div className="flex items-center gap-2">
+                        {/* Editor Toggle */}
+                        <button 
+                          onClick={() => setIsEditorOpen(!isEditorOpen)}
+                          className={`flex items-center gap-1.5 px-3 py-1.5 rounded-full text-xs font-medium border transition-colors ${isEditorOpen ? `${theme.accentBg} ${theme.accent} border-${theme.accent}/20` : `${theme.bgApp} border-${theme.border} ${theme.textMuted} hover:text-white`}`}
+                        >
+                           <Code2 className="w-3.5 h-3.5" />
+                           <span className="hidden sm:inline">{isEditorOpen ? 'Hide Code' : 'View Code'}</span>
+                           <span className="sm:hidden">Code</span>
+                        </button>
                      </div>
                   </div>
-                )}
-              </div>
 
-              <div className={`p-4 border-t ${theme.border} ${theme.bgPanel} flex-shrink-0`}>
-                 <div className="flex gap-2 mb-3 overflow-x-auto pb-1 no-scrollbar">
-                    <button onClick={() => updateActiveSession({ mode: 'FIX' })} className={`px-3 py-1.5 rounded-full text-xs font-medium border transition-all flex items-center gap-1.5 whitespace-nowrap ${activeSession.mode === 'FIX' ? `${theme.button} border-transparent text-white` : `border-${theme.border} ${theme.textMuted} hover:text-white`}`}>
-                      <Wrench className="w-3 h-3" /> Fix Mode
-                    </button>
-                    <button onClick={() => updateActiveSession({ mode: 'EXPLAIN' })} className={`px-3 py-1.5 rounded-full text-xs font-medium border transition-all flex items-center gap-1.5 whitespace-nowrap ${activeSession.mode === 'EXPLAIN' ? `${theme.button} border-transparent text-white` : `border-${theme.border} ${theme.textMuted} hover:text-white`}`}>
-                      <BookOpen className="w-3 h-3" /> Explain Mode
-                    </button>
-                 </div>
-                 
-                 <div className="relative flex items-end gap-2">
-                    <textarea
-                      value={inputInstruction}
-                      onChange={(e) => setInputInstruction(e.target.value)}
-                      onKeyDown={(e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); handleSendMessage(); } }}
-                      placeholder={activeSession.messages.length === 0 ? (activeSession.mode === 'FIX' ? DEFAULT_INSTRUCTION : "What should I explain?") : "Ask follow-up or request file changes..."}
-                      className={`w-full ${theme.bgApp} border ${theme.border} rounded-xl px-4 py-3 text-sm focus:ring-2 focus:ring-${theme.accent}/50 outline-none resize-none max-h-32 custom-scrollbar shadow-inner`}
-                      rows={1}
-                      style={{minHeight: '46px'}}
-                    />
-                    <button onClick={handleSendMessage} disabled={isLoading} className={`p-3 rounded-xl flex-shrink-0 transition-all ${isLoading ? 'bg-white/5 text-slate-500 cursor-not-allowed' : `${theme.button} ${theme.buttonHover} text-white shadow-lg`}`}>
-                      <Send className="w-5 h-5" />
-                    </button>
-                 </div>
-              </div>
-            </div>
-          )}
+                  <div ref={chatContainerRef} className="flex-grow overflow-y-auto p-4 space-y-6 custom-scrollbar scroll-smooth">
+                    {activeSession.messages.length === 0 ? (
+                      <div className="h-full flex flex-col items-center justify-center opacity-60 text-center p-8">
+                         <div className={`${theme.accentBg} p-6 rounded-full mb-4`}>
+                            <MessageSquare className={`w-10 h-10 ${theme.accent}`} />
+                         </div>
+                         <h3 className="text-lg font-medium mb-2">Interactive Mode</h3>
+                         <p className={`text-sm ${theme.textMuted} max-w-sm mb-6`}>
+                           Ask Gemini to fix bugs, create new files, or explain the codebase.
+                         </p>
+                         <button onClick={() => setIsEditorOpen(true)} className={`px-4 py-2 rounded-lg text-sm border ${theme.border} hover:bg-white/5 transition`}>
+                            View Project Files
+                         </button>
+                      </div>
+                    ) : (
+                      activeSession.messages.map((msg) => (
+                        <div key={msg.id} className={`flex flex-col ${msg.role === 'user' && !msg.isToolCall ? 'items-end' : 'items-start'}`}>
+                          <div className={`max-w-[95%] lg:max-w-[85%] rounded-2xl px-5 py-4 shadow-sm ${
+                            msg.isToolCall 
+                            ? `${theme.bgPanelHeader} border border-dashed ${theme.border} w-full text-xs font-mono opacity-80`
+                            : msg.role === 'user' 
+                              ? `${theme.accentBg} border border-${theme.accent}/20 rounded-tr-none` 
+                              : `${theme.bgPanel} border ${theme.border} rounded-tl-none`
+                          }`}>
+                            {msg.role === 'user' && !msg.isToolCall ? (
+                              <p className={`whitespace-pre-wrap text-sm ${theme.textMain}`}>{msg.content}</p>
+                            ) : (
+                              <MarkdownRenderer content={msg.content} theme={theme} />
+                            )}
+                          </div>
+                          <span className={`text-[10px] mt-1.5 opacity-40 mx-1 ${theme.textMuted}`}>
+                            {msg.isToolCall ? 'System Action' : (msg.role === 'user' ? 'You' : 'Gemini')} • {new Date(msg.timestamp).toLocaleTimeString([], {hour: '2-digit', minute: '2-digit'})}
+                          </span>
+                        </div>
+                      ))
+                    )}
+                    
+                    {isLoading && (
+                       <div className="flex flex-col items-start animate-pulse">
+                          <div className={`${theme.bgPanel} border ${theme.border} rounded-2xl rounded-tl-none px-5 py-4 flex items-center gap-3`}>
+                             <div className={`w-2 h-2 rounded-full ${theme.accent} bg-current animate-bounce`} style={{animationDelay: '0ms'}}></div>
+                             <div className={`w-2 h-2 rounded-full ${theme.accent} bg-current animate-bounce`} style={{animationDelay: '150ms'}}></div>
+                             <div className={`w-2 h-2 rounded-full ${theme.accent} bg-current animate-bounce`} style={{animationDelay: '300ms'}}></div>
+                          </div>
+                          <span className={`text-[10px] mt-1.5 opacity-40 mx-1 ${theme.textMuted}`}>Thinking...</span>
+                       </div>
+                    )}
+                    {error && (
+                      <div className="w-full flex justify-center">
+                         <div className="bg-red-500/10 border border-red-500/20 text-red-400 px-4 py-2 rounded-lg text-sm flex items-center gap-2">
+                            <AlertCircle className="w-4 h-4" /> {error}
+                         </div>
+                      </div>
+                    )}
+                  </div>
+
+                  <div className={`p-4 border-t ${theme.border} ${theme.bgPanel} flex-shrink-0`}>
+                     <div className="flex gap-2 mb-3 overflow-x-auto pb-1 no-scrollbar">
+                        <button onClick={() => updateActiveSession({ mode: 'FIX' })} className={`px-3 py-1.5 rounded-full text-xs font-medium border transition-all flex items-center gap-1.5 whitespace-nowrap ${activeSession.mode === 'FIX' ? `${theme.button} border-transparent text-white` : `border-${theme.border} ${theme.textMuted} hover:text-white`}`}>
+                          <Wrench className="w-3 h-3" /> Fix Mode
+                        </button>
+                        <button onClick={() => updateActiveSession({ mode: 'EXPLAIN' })} className={`px-3 py-1.5 rounded-full text-xs font-medium border transition-all flex items-center gap-1.5 whitespace-nowrap ${activeSession.mode === 'EXPLAIN' ? `${theme.button} border-transparent text-white` : `border-${theme.border} ${theme.textMuted} hover:text-white`}`}>
+                          <BookOpen className="w-3 h-3" /> Explain Mode
+                        </button>
+                     </div>
+                     
+                     <div className="relative flex items-end gap-2">
+                        <textarea
+                          value={inputInstruction}
+                          onChange={(e) => setInputInstruction(e.target.value)}
+                          onKeyDown={(e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); handleSendMessage(); } }}
+                          placeholder={activeSession.messages.length === 0 ? (activeSession.mode === 'FIX' ? DEFAULT_INSTRUCTION : "What should I explain?") : "Ask follow-up or request file changes..."}
+                          className={`w-full ${theme.bgApp} border ${theme.border} rounded-xl px-4 py-3 text-sm focus:ring-2 focus:ring-${theme.accent}/50 outline-none resize-none max-h-32 custom-scrollbar shadow-inner`}
+                          rows={1}
+                          style={{minHeight: '46px'}}
+                        />
+                        <button onClick={handleSendMessage} disabled={isLoading} className={`p-3 rounded-xl flex-shrink-0 transition-all ${isLoading ? 'bg-white/5 text-slate-500 cursor-not-allowed' : `${theme.button} ${theme.buttonHover} text-white shadow-lg`}`}>
+                          <Send className="w-5 h-5" />
+                        </button>
+                     </div>
+                  </div>
+               </>
+             )}
+          </div>
         </div>
       </div>
 
