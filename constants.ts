@@ -22,8 +22,47 @@ export const LANGUAGES: CodeLanguage[] = [
 export const DEFAULT_INSTRUCTION = "Fix any bugs and improve code quality.";
 
 // Context Management Constants
-export const CONTEXT_THRESHOLD_CHARS = 25000; // Approx 6k tokens. If history > this, we summarize.
+export const CONTEXT_THRESHOLD_CHARS = 25000; 
 export const SUMMARY_TOKEN_BUDGET = 1000; 
+
+// Syntax Highlight Colors for Overlay
+export const THEME_COLORS: Record<ThemeType, { keyword: string, string: string, function: string, comment: string, number: string }> = {
+  cosmic: {
+    keyword: '#c084fc', // Purple
+    string: '#a5f3fc', // Cyan
+    function: '#818cf8', // Indigo
+    comment: '#64748b', // Slate
+    number: '#f472b6' // Pink
+  },
+  aurora: {
+    keyword: '#e879f9', // Fuchsia
+    string: '#c4b5fd', // Violet
+    function: '#f0abfc', // Pink
+    comment: '#71717a', // Zinc
+    number: '#22d3ee' // Cyan
+  },
+  forest: {
+    keyword: '#4ade80', // Green
+    string: '#a7f3d0', // Emerald
+    function: '#2dd4bf', // Teal
+    comment: '#78716c', // Stone
+    number: '#fbbf24' // Amber
+  },
+  midnight: {
+    keyword: '#ffffff', // White
+    string: '#d4d4d4', // Gray
+    function: '#e5e5e5', // Light Gray
+    comment: '#525252', // Dark Gray
+    number: '#a3a3a3' // Med Gray
+  },
+  sunset: {
+    keyword: '#fb923c', // Orange
+    string: '#fcd34d', // Amber
+    function: '#fca5a5', // Red
+    comment: '#737373', // Neutral
+    number: '#fbbf24' // Yellow
+  }
+};
 
 export const THEMES: Record<ThemeType, ThemeConfig> = {
   cosmic: {

@@ -1,9 +1,40 @@
 
-import { GoogleGenAI } from "@google/genai";
-import { FixRequest, FixResponse, ChatMessage } from '../types';
+import { GoogleGenAI, FunctionDeclaration, Type } from "@google/genai";
+import { FixRequest, FixResponse, ChatMessage, ToolCall } from '../types';
 import { CONTEXT_THRESHOLD_CHARS } from '../constants';
 
 const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
+
+// --- TOOL DEFINITIONS ---
+
+const createFileTool: FunctionDeclaration = {
+  name: 'create_file',
+  description: 'Create a new file in the project workspace.',
+  parameters: {
+    type: Type.OBJECT,
+    properties: {
+      name: { type: Type.STRING, description: 'The name of the file (e.g., utils.js, styles.css)' },
+      content: { type: Type.STRING, description: 'The content of the file' },
+      language: { type: Type.STRING, description: 'The programming language of the file' }
+    },
+    required: ['name', 'content']
+  }
+};
+
+const updateFileTool: FunctionDeclaration = {
+  name: 'update_file',
+  description: 'Update the content of an existing file.',
+  parameters: {
+    type: Type.OBJECT,
+    properties: {
+      name: { type: Type.STRING, description: 'The name of the file to update' },
+      content: { type: Type.STRING, description: 'The new full content of the file' }
+    },
+    required: ['name', 'content']
+  }
+};
+
+// --- LOGIC ---
 
 // Function to compress history into a summary
 const summarizeHistory = async (history: ChatMessage[], language: string): Promise<string> => {
@@ -12,9 +43,8 @@ const summarizeHistory = async (history: ChatMessage[], language: string): Promi
     
     const prompt = `
       You are a specialized system optimizer.
-      Read the following technical conversation regarding ${language} code.
+      Read the following technical conversation.
       Create a concise but technically accurate summary of the problems discussed, solutions proposed, and key decisions made.
-      This summary will be used to prime your future self so you can forget the raw message history.
       
       Conversation:
       ${transcript}
@@ -41,17 +71,14 @@ export const fixCodeWithGemini = async (request: FixRequest): Promise<FixRespons
     const historyCharCount = JSON.stringify(request.history).length;
     
     if (historyCharCount > CONTEXT_THRESHOLD_CHARS) {
-      // Logic: Summarize everything except the last 2 messages (to keep flow)
       const messagesToSummarize = request.history.slice(0, -2);
       const recentMessages = request.history.slice(-2);
+      const summary = await summarizeHistory(messagesToSummarize, request.activeFile.language);
       
-      const summary = await summarizeHistory(messagesToSummarize, request.language);
-      
-      // We inject a "System Memory" message
       const systemMessage: ChatMessage = {
         id: 'system-summary',
         role: 'model',
-        content: `**SYSTEM NOTIFICATION:** *Memory Optimization Triggered.*\n\n**Previous Session Summary:**\n${summary}\n\n*The model has reset its context window using this summary to maintain performance.*`,
+        content: `**SYSTEM NOTIFICATION:** *Memory Optimization Triggered.*\n\n**Previous Session Summary:**\n${summary}`,
         timestamp: Date.now()
       };
       
@@ -59,57 +86,55 @@ export const fixCodeWithGemini = async (request: FixRequest): Promise<FixRespons
       contextSummarized = true;
     }
 
-    // 2. Build the current prompt
+    // 2. Build the Context
+    const fileList = request.allFiles.map(f => `- ${f.name} (${f.language})`).join('\n');
+    const otherFilesContext = request.allFiles
+      .filter(f => f.id !== request.activeFile.id)
+      .map(f => `File: ${f.name}\n\`\`\`${f.language}\n${f.content}\n\`\`\``)
+      .join('\n\n');
+
     const historyContext = finalHistory.map(msg => 
-      `${msg.role === 'user' ? 'User' : 'Model'}: ${msg.content}`
+      msg.isToolCall 
+        ? `System Tool Execution: ${msg.content}`
+        : `${msg.role === 'user' ? 'User' : 'Model'}: ${msg.content}`
     ).join('\n\n');
 
-    let systemPrompt = '';
-    
-    if (request.mode === 'EXPLAIN') {
-      systemPrompt = `
-        You are an expert senior software engineer and technical educator.
-        Focus: EXPLAINING code and logs.
-        
-        Context - The User is working on this code in ${request.language}:
-        \`\`\`${request.language}
-        ${request.code}
-        \`\`\`
-        
-        Chat History:
-        ${historyContext}
-        
-        Current User Request: "${request.currentMessage}"
+    const modePrompt = request.mode === 'EXPLAIN' 
+      ? "Focus: EXPLAINING code and logs. Be educational." 
+      : "Focus: FIXING and OPTIMIZING code. You can create/update files if needed.";
 
-        Instructions:
-        1. Answer the user's request based on the code provided.
-        2. Use Markdown formatting (bolding, lists, code blocks).
-        3. Be educational and clear.
-      `;
-    } else {
-      systemPrompt = `
-        You are an expert senior software engineer.
-        Focus: FIXING and OPTIMIZING code.
-        
-        Context - The User is working on this code in ${request.language}:
-        \`\`\`${request.language}
-        ${request.code}
-        \`\`\`
-        
-        Chat History:
-        ${historyContext}
-        
-        Current User Request: "${request.currentMessage}"
+    const systemPrompt = `
+      You are an expert senior software engineer and technical educator.
+      ${modePrompt}
+      
+      **Project Context:**
+      You have access to a virtual file system.
+      Current Active File: '${request.activeFile.name}'
+      
+      **Active File Content:**
+      \`\`\`${request.activeFile.language}
+      ${request.activeFile.content}
+      \`\`\`
 
-        Instructions:
-        1. Provide the fixed code or answer the technical question.
-        2. If providing code, explain *why* changes were made.
-        3. Use Markdown.
-      `;
-    }
+      **Other Files in Project:**
+      ${fileList}
+      ${otherFilesContext}
+      
+      **Chat History:**
+      ${historyContext}
+      
+      **Current User Request:** "${request.currentMessage}"
+
+      Instructions:
+      1. Address the user's request.
+      2. If you need to fix code or create new modules, USE THE AVAILABLE TOOLS (update_file, create_file).
+      3. Do not ask for permission to fix it, just use the tools to perform the fix, then explain what you did.
+      4. Use Markdown for text responses.
+    `;
 
     const config: any = {
-       thinkingConfig: { thinkingBudget: 0 }
+       thinkingConfig: { thinkingBudget: 0 },
+       tools: [{ functionDeclarations: [createFileTool, updateFileTool] }]
     };
 
     if (request.useHighCapacity) {
@@ -121,6 +146,28 @@ export const fixCodeWithGemini = async (request: FixRequest): Promise<FixRespons
       contents: systemPrompt,
       config: config
     });
+
+    // Check for function calls
+    const toolCalls: ToolCall[] = [];
+    
+    // The SDK returns tool calls in response.functionCalls
+    if (response.functionCalls && response.functionCalls.length > 0) {
+       response.functionCalls.forEach(fc => {
+         toolCalls.push({
+           id: 'call_' + Math.random().toString(36).substr(2, 9), // Gemini 2.5 flash might not return IDs, generate one
+           name: fc.name,
+           args: fc.args
+         });
+       });
+       
+       // If tools are called, the text might be empty or instructional. 
+       // We return the tools so the App can execute them.
+       return {
+         response: response.text || "Executing file operations...",
+         toolCalls,
+         contextSummarized
+       };
+    }
 
     const text = response.text;
 

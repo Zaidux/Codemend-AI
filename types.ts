@@ -41,25 +41,34 @@ export interface ThemeConfig {
 export interface ChatMessage {
   id: string;
   role: 'user' | 'model';
-  content: string;
+  content: string; // Can be text or JSON string for tool calls
   timestamp: number;
+  isToolCall?: boolean;
+  toolCallId?: string;
+}
+
+export interface ProjectFile {
+  id: string;
+  name: string;
+  language: CodeLanguage;
+  content: string;
 }
 
 export interface Session {
   id: string;
   title: string;
-  code: string;
-  language: CodeLanguage;
+  files: ProjectFile[];
+  activeFileId: string;
   messages: ChatMessage[];
   lastModified: number;
   mode: AppMode;
 }
 
 export interface FixRequest {
-  code: string;
-  language: CodeLanguage;
-  history: ChatMessage[]; // Full conversation history
-  currentMessage: string; // The new prompt
+  activeFile: ProjectFile;
+  allFiles: ProjectFile[]; // Context of other files
+  history: ChatMessage[]; 
+  currentMessage: string; 
   mode: AppMode;
   useHighCapacity: boolean;
 }
@@ -67,5 +76,12 @@ export interface FixRequest {
 export interface FixResponse {
   response: string;
   error?: string;
-  contextSummarized?: boolean; // Flag to tell UI we optimized context
+  contextSummarized?: boolean;
+  toolCalls?: ToolCall[];
+}
+
+export interface ToolCall {
+  id: string;
+  name: string;
+  args: any;
 }
