@@ -1,6 +1,6 @@
 
 import { GoogleGenAI, Type } from "@google/genai";
-import { FixRequest, FixResponse, ToolCall, LLMConfig, Attachment, KnowledgeEntry } from '../types';
+import { FixRequest, FixResponse, ToolCall, LLMConfig, Attachment, KnowledgeEntry, FileDiff, TodoItem } from '../types';
 
 // --- TOOL DEFINITIONS ---
 
@@ -20,7 +20,7 @@ const TOOL_DEFINITIONS = [
   },
   {
     name: 'update_file',
-    description: 'Update the content of an existing file.',
+    description: 'Update the content of an existing file. This triggers a diff review.',
     parameters: {
       type: Type.OBJECT,
       properties: {
@@ -40,6 +40,21 @@ const TOOL_DEFINITIONS = [
         content: { type: Type.STRING, description: 'The knowledge or pattern to save.' }
       },
       required: ['tags', 'content']
+    }
+  },
+  {
+    name: 'manage_tasks',
+    description: 'Manage the project To-Do list. Use this to create plans, update progress, or mark completion.',
+    parameters: {
+      type: Type.OBJECT,
+      properties: {
+        action: { type: Type.STRING, enum: ['add', 'update', 'complete', 'delete'], description: 'The action to perform on the task list' },
+        task: { type: Type.STRING, description: 'The task description (for add/update)' },
+        phase: { type: Type.STRING, description: 'The phase this task belongs to (e.g., "Setup", "Implementation")' },
+        taskId: { type: Type.STRING, description: 'The ID of the task (for update/complete/delete)' },
+        status: { type: Type.STRING, enum: ['pending', 'in_progress', 'completed'], description: 'Status for update' }
+      },
+      required: ['action']
     }
   }
 ];
@@ -122,7 +137,7 @@ const callOpenAICompatible = async (
 // --- ORCHESTRATOR ---
 
 export const fixCodeWithGemini = async (request: FixRequest): Promise<FixResponse> => {
-  const { llmConfig, history, currentMessage, allFiles, activeFile, mode, attachments, roles, knowledgeBase, useInternet } = request;
+  const { llmConfig, history, currentMessage, allFiles, activeFile, mode, attachments, roles, knowledgeBase, useInternet, currentTodos } = request;
 
   const isGemini = llmConfig.provider === 'gemini';
   const apiKey = llmConfig.apiKey || (isGemini ? process.env.API_KEY : '');
@@ -146,24 +161,37 @@ export const fixCodeWithGemini = async (request: FixRequest): Promise<FixRespons
   const plannerRole = roles.find(r => r.id === llmConfig.plannerRoleId) || roles[0];
   const coderRole = roles.find(r => r.id === llmConfig.coderRoleId) || roles[1];
 
+  const fileContext = allFiles.map(f => `File: ${f.name} (${f.language})\n\`\`\`${f.language}\n${f.content}\n\`\`\``).join('\n\n');
+  const todoContext = currentTodos.length > 0 
+      ? `\n**CURRENT TO-DO LIST:**\n${currentTodos.map(t => `- [${t.status}] ${t.task} (Phase: ${t.phase})`).join('\n')}`
+      : "";
+
   // --- STEP 1: PLANNER (FIX Mode Only) ---
   let plan = "";
   if (mode === 'FIX') {
     const plannerPrompt = `
       ${plannerRole.systemPrompt}
       ${knowledgeContext}
+      ${todoContext}
       
       User Request: "${currentMessage}"
       Active File: ${activeFile.name}
       Project Files: ${allFiles.map(f => f.name).join(', ')}
+
+      Analyze the request. If it is complex, use the 'manage_tasks' tool to create or update the To-Do list phases.
+      Provide a concise execution plan for the Coder agent.
     `;
     
     try {
+      const plannerModel = llmConfig.plannerModelId || llmConfig.activeModelId;
       if (isGemini) {
-        const res = await callGemini(llmConfig.activeModelId, [{ text: plannerPrompt }], apiKey, false, false);
+        const res = await callGemini(plannerModel, [{ text: plannerPrompt }], apiKey, true, false); // Planner has tools
         plan = res.text || "";
+        // If planner made tool calls (e.g. manage_tasks), we might need to process them in App logic, 
+        // but for now we treat the Planner's text as the plan. 
+        // Note: Ideally we'd execute planner tool calls here, but for simplicity we let the Coder see the plan.
       } else {
-        const res = await callOpenAICompatible(baseUrl, apiKey, llmConfig.activeModelId, [{role: 'user', content: plannerPrompt}]);
+        const res = await callOpenAICompatible(baseUrl, apiKey, plannerModel, [{role: 'user', content: plannerPrompt}], true);
         plan = res.choices[0]?.message?.content || "";
       }
     } catch (e: any) {
@@ -174,15 +202,19 @@ export const fixCodeWithGemini = async (request: FixRequest): Promise<FixRespons
 
   // --- STEP 2: EXECUTOR / CHAT ---
   
-  const fileContext = allFiles.map(f => `File: ${f.name} (${f.language})\n\`\`\`${f.language}\n${f.content}\n\`\`\``).join('\n\n');
-  
+  // Decide which model to use
+  let activeAgentModel = llmConfig.chatModelId;
+  if (mode === 'FIX') activeAgentModel = llmConfig.coderModelId;
+  // Fallback
+  if (!activeAgentModel) activeAgentModel = llmConfig.activeModelId;
+
   let systemInstruction = "";
 
   if (mode === 'NORMAL') {
       systemInstruction = `
         You are a helpful, intelligent AI assistant. 
         You have access to the internet if requested (Grounding).
-        You can also learn from the user by using the 'save_knowledge' tool when you encounter new preferences or facts worth remembering.
+        You can also learn from the user by using the 'save_knowledge' tool.
         
         ${knowledgeContext}
 
@@ -198,18 +230,23 @@ export const fixCodeWithGemini = async (request: FixRequest): Promise<FixRespons
         **PROJECT FILES:**
         ${fileContext}
         
+        ${todoContext}
+
         ${knowledgeContext}
 
         **USER REQUEST:** ${currentMessage}
 
-        ${mode === 'FIX' ? 'Use the available tools (create_file, update_file) to apply changes.' : ''}
-        You can also use 'save_knowledge' if the user explicitly teaches you a pattern or preference.
+        ${mode === 'FIX' ? 'Use the available tools (create_file, update_file, manage_tasks) to apply changes.' : ''}
+        
+        IMPORTANT: When you use 'update_file', the user will be shown a Diff View to review your changes before they are applied. 
+        Ensure you provide the FULL content of the file in 'update_file', not just snippets.
       `;
   }
 
   try {
     let responseText = "";
     let toolCalls: ToolCall[] = [];
+    const proposedChanges: FileDiff[] = [];
 
     const contentParts: any[] = [];
     
@@ -249,22 +286,49 @@ export const fixCodeWithGemini = async (request: FixRequest): Promise<FixRespons
         openAIMessages.push({ role: 'user', content: userContent });
     }
 
+    // Execution Function to process tool calls and generate Diff
+    const processToolCalls = (rawCalls: any[]) => {
+        rawCalls.forEach((fc: any) => {
+             const args = fc.args; // Gemini SDK returns object, OpenAI string
+             const toolCall: ToolCall = {
+                 id: 'call_' + Math.random().toString(36).substr(2, 9),
+                 name: fc.name,
+                 args: args
+             };
+             toolCalls.push(toolCall);
+
+             // Intercept File Changes for Diff Engine
+             if (toolCall.name === 'update_file') {
+                 const existingFile = allFiles.find(f => f.name === toolCall.args.name);
+                 if (existingFile) {
+                     proposedChanges.push({
+                         id: crypto.randomUUID(),
+                         fileName: toolCall.args.name,
+                         originalContent: existingFile.content,
+                         newContent: toolCall.args.content,
+                         type: 'update'
+                     });
+                 }
+             } else if (toolCall.name === 'create_file') {
+                 proposedChanges.push({
+                     id: crypto.randomUUID(),
+                     fileName: toolCall.args.name,
+                     originalContent: '',
+                     newContent: toolCall.args.content,
+                     type: 'create'
+                 });
+             }
+        });
+    };
+
     if (isGemini) {
       const fullParts = [{ text: systemInstruction }, ...contentParts];
-      // Use internet only if requested and model is gemini (supports search tool)
-      const res = await callGemini(llmConfig.activeModelId, fullParts as any, apiKey, true, useInternet);
+      const res = await callGemini(activeAgentModel, fullParts as any, apiKey, true, useInternet);
       
       if (res.functionCalls) {
-        res.functionCalls.forEach((fc: any) => {
-          toolCalls.push({
-             id: 'call_' + Math.random().toString(36).substr(2, 9),
-             name: fc.name,
-             args: fc.args
-          });
-        });
+        processToolCalls(res.functionCalls);
       }
       
-      // Grounding Metadata handling
       let groundingText = "";
       if (res.candidates?.[0]?.groundingMetadata?.groundingChunks) {
           const chunks = res.candidates[0].groundingMetadata.groundingChunks;
@@ -275,28 +339,27 @@ export const fixCodeWithGemini = async (request: FixRequest): Promise<FixRespons
           if (links) groundingText = `\n\n**Sources:** ${links}`;
       }
 
-      responseText = (res.text || (toolCalls.length > 0 ? `Executing operations...` : "No response.")) + groundingText;
+      responseText = (res.text || (toolCalls.length > 0 ? `Proposed ${toolCalls.length} operations.` : "No response.")) + groundingText;
 
     } else {
-      const res = await callOpenAICompatible(baseUrl, apiKey, llmConfig.activeModelId, openAIMessages, true);
+      const res = await callOpenAICompatible(baseUrl, apiKey, activeAgentModel, openAIMessages, true);
       const choice = res.choices[0];
       responseText = choice.message?.content || "";
 
       if (choice.message?.tool_calls) {
-        choice.message.tool_calls.forEach((tc: any) => {
-           toolCalls.push({
-             id: tc.id,
+         const calls = choice.message.tool_calls.map((tc: any) => ({
              name: tc.function.name,
              args: JSON.parse(tc.function.arguments)
-           });
-        });
-        if (!responseText) responseText = "Executing tool operations...";
+         }));
+         processToolCalls(calls);
+         if (!responseText) responseText = "Proposed operations available for review.";
       }
     }
 
     return {
       response: mode === 'FIX' && plan ? `**Plan:**\n${plan}\n\n---\n\n${responseText}` : responseText,
       toolCalls,
+      proposedChanges,
       contextSummarized: false
     };
 

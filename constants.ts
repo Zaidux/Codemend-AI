@@ -60,7 +60,10 @@ export const DEFAULT_LLM_CONFIG: LLMConfig = {
   provider: 'gemini',
   plannerRoleId: 'role_architect',
   coderRoleId: 'role_developer',
-  activeModelId: 'gemini-2.5-flash'
+  activeModelId: 'gemini-2.5-flash',
+  plannerModelId: 'gemini-2.5-flash',
+  coderModelId: 'gemini-2.5-flash',
+  chatModelId: 'gemini-2.5-flash'
 };
 
 export const AVAILABLE_MODELS = {

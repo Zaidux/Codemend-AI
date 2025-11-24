@@ -1,15 +1,17 @@
 
 import * as React from 'react';
 import { useState, useEffect, useRef } from 'react';
-import { Sparkles, Play, Wrench, X, Settings, MessageSquare, Plus, Trash2, Send, Sidebar as SidebarIcon, LayoutTemplate, FileCode, FolderOpen, FilePlus, Code2, ArrowLeft, Eye, Image as ImageIcon, Mic, StopCircle, BookOpen, Book, Globe, Brain } from 'lucide-react';
+import { Sparkles, Play, Wrench, X, Settings, MessageSquare, Plus, Trash2, Send, Sidebar as SidebarIcon, LayoutTemplate, FileCode, FolderOpen, FilePlus, Code2, ArrowLeft, Eye, Image as ImageIcon, Mic, StopCircle, BookOpen, Book, Globe, Brain, Check, ListTodo, GitCompare } from 'lucide-react';
 import Header from './components/Header';
 import MarkdownRenderer from './components/MarkdownRenderer';
 import CodeEditor from './components/CodeEditor';
 import WebPreview from './components/WebPreview';
 import SettingsModal from './components/SettingsModal';
 import KnowledgeBase from './components/KnowledgeBase';
+import TodoList from './components/TodoList';
+import DiffViewer from './components/DiffViewer';
 import { THEMES, DEFAULT_LLM_CONFIG, DEFAULT_ROLES } from './constants';
-import { CodeLanguage, AppMode, ThemeType, Session, ChatMessage, ViewMode, ProjectFile, LLMConfig, Project, Attachment, AgentRole, KnowledgeEntry } from './types';
+import { CodeLanguage, AppMode, ThemeType, Session, ChatMessage, ViewMode, ProjectFile, LLMConfig, Project, Attachment, AgentRole, KnowledgeEntry, TodoItem, FileDiff } from './types';
 import { fixCodeWithGemini } from './services/llmService';
 
 // --- FACTORY FUNCTIONS ---
@@ -61,7 +63,10 @@ const App: React.FC = () => {
   const [showSettings, setShowSettings] = useState<boolean>(false);
   const [isSidebarOpen, setIsSidebarOpen] = useState<boolean>(true);
   const [isEditorOpen, setIsEditorOpen] = useState<boolean>(false);
-  const [showPreview, setShowPreview] = useState<boolean>(false);
+  
+  // Left Panel Tab State
+  const [leftPanelTab, setLeftPanelTab] = useState<'code' | 'preview' | 'todos'>('code');
+
   const [activeTab, setActiveTab] = useState<'chats' | 'files' | 'knowledge'>('chats');
 
   // Data
@@ -84,6 +89,10 @@ const App: React.FC = () => {
 
   const [currentProjectId, setCurrentProjectId] = useState<string>(() => projects[0]?.id || '');
   const [currentSessionId, setCurrentSessionId] = useState<string>('');
+  
+  // To-Do List & Diff Engine
+  const [todoList, setTodoList] = useState<TodoItem[]>([]);
+  const [pendingDiffs, setPendingDiffs] = useState<FileDiff[]>([]);
   
   // Features
   const [useInternet, setUseInternet] = useState(false);
@@ -177,6 +186,30 @@ const App: React.FC = () => {
     if (trimmed.includes('def ')) return CodeLanguage.PYTHON;
     if (trimmed.includes('public class')) return CodeLanguage.JAVA;
     return CodeLanguage.JAVASCRIPT;
+  };
+  
+  const handleApplyDiff = (diff: FileDiff) => {
+      const updatedFiles = [...activeProject.files];
+      if (diff.type === 'create') {
+          const newFile = createNewFile(diff.fileName);
+          newFile.content = diff.newContent;
+          // Simple lang detection
+          if (diff.fileName.endsWith('.html')) newFile.language = CodeLanguage.HTML;
+          else if (diff.fileName.endsWith('.css')) newFile.language = CodeLanguage.CSS;
+          else if (diff.fileName.endsWith('.py')) newFile.language = CodeLanguage.PYTHON;
+          updatedFiles.push(newFile);
+      } else if (diff.type === 'update') {
+          const idx = updatedFiles.findIndex(f => f.name === diff.fileName);
+          if (idx !== -1) {
+              updatedFiles[idx] = { ...updatedFiles[idx], content: diff.newContent };
+          }
+      }
+      updateProject({ files: updatedFiles });
+      setPendingDiffs(prev => prev.filter(d => d.id !== diff.id));
+  };
+
+  const handleRejectDiff = (id: string) => {
+      setPendingDiffs(prev => prev.filter(d => d.id !== id));
   };
 
   // --- ACTIONS ---
@@ -294,7 +327,8 @@ const App: React.FC = () => {
       llmConfig: llmConfig,
       roles: roles,
       knowledgeBase: knowledgeBase,
-      useInternet: useInternet
+      useInternet: useInternet,
+      currentTodos: todoList
     });
 
     if (response.error) {
@@ -303,18 +337,14 @@ const App: React.FC = () => {
       return;
     }
 
-    // Handle Tool Calls
+    // Handle Tool Calls (Tasks & Knowledge)
+    // Pending Diffs are handled separately via proposedChanges
     if (response.toolCalls && response.toolCalls.length > 0) {
-       let updatedFiles = [...activeProject.files];
        let newKnowledge = [...knowledgeBase];
+       let newTodos = [...todoList];
        
        response.toolCalls.forEach(call => {
-           if (call.name === 'create_file') {
-                updatedFiles.push(createNewFile(call.args.name));
-           } else if (call.name === 'update_file') {
-                const idx = updatedFiles.findIndex(f => f.name === call.args.name);
-                if (idx !== -1) updatedFiles[idx] = { ...updatedFiles[idx], content: call.args.content };
-           } else if (call.name === 'save_knowledge') {
+           if (call.name === 'save_knowledge') {
                 const entry: KnowledgeEntry = {
                     id: crypto.randomUUID(),
                     tags: call.args.tags,
@@ -323,14 +353,30 @@ const App: React.FC = () => {
                     timestamp: Date.now()
                 };
                 newKnowledge.push(entry);
+           } else if (call.name === 'manage_tasks') {
+               const { action, task, phase, taskId, status } = call.args;
+               if (action === 'add') {
+                   newTodos.push({ id: crypto.randomUUID(), task, phase: phase || 'General', status: 'pending' });
+               } else if (action === 'update' && taskId) {
+                   newTodos = newTodos.map(t => t.id === taskId ? { ...t, status: status || t.status } : t);
+               } else if (action === 'complete' && taskId) {
+                   newTodos = newTodos.map(t => t.id === taskId ? { ...t, status: 'completed' } : t);
+               } else if (action === 'delete' && taskId) {
+                   newTodos = newTodos.filter(t => t.id !== taskId);
+               }
            }
        });
-       if (response.toolCalls.some(c => c.name.includes('_file'))) {
-           updateProject({ files: updatedFiles });
+       if (newKnowledge.length > knowledgeBase.length) setKnowledgeBase(newKnowledge);
+       if (JSON.stringify(newTodos) !== JSON.stringify(todoList)) {
+           setTodoList(newTodos);
+           // Auto-switch to Todos tab if task was added
+           setLeftPanelTab('todos');
        }
-       if (newKnowledge.length > knowledgeBase.length) {
-           setKnowledgeBase(newKnowledge);
-       }
+    }
+
+    // Handle Proposed Changes (Diffs)
+    if (response.proposedChanges && response.proposedChanges.length > 0) {
+        setPendingDiffs(prev => [...prev, ...response.proposedChanges!]);
     }
 
     const aiMsg: ChatMessage = {
@@ -434,7 +480,7 @@ const App: React.FC = () => {
 
         <div className="flex-grow flex flex-col lg:flex-row overflow-hidden relative">
           
-          {/* EDITOR PANEL */}
+          {/* EDITOR / PREVIEW / TODO PANEL */}
           <div className={`flex flex-col border-b lg:border-b-0 lg:border-r ${theme.border} transition-all duration-300 ${viewMode === 'classic' ? 'w-full h-1/2 lg:h-auto lg:w-1/2' : isEditorOpen ? 'w-full h-full lg:w-1/2 absolute lg:relative z-20 lg:z-0 bg-slate-900 lg:bg-transparent' : 'hidden lg:w-0'}`}>
              <div className={`${theme.bgPanel} border-b ${theme.border} flex items-center justify-between h-12 flex-shrink-0 px-2`}>
                 <div className="flex items-center gap-1 overflow-x-auto no-scrollbar mask-gradient-right max-w-[60%]">
@@ -454,12 +500,20 @@ const App: React.FC = () => {
                    <button onClick={handleCreateFile} className={`p-1.5 rounded hover:bg-white/10 ${theme.textMuted}`}><Plus className="w-3.5 h-3.5" /></button>
                 </div>
                 <div className="flex items-center gap-1 pl-2 border-l border-white/5">
-                   <button onClick={() => setShowPreview(!showPreview)} className={`p-2 rounded transition-colors ${showPreview ? `${theme.accentBg} ${theme.accent}` : `${theme.textMuted} hover:text-white hover:bg-white/10`}`}>{showPreview ? <Code2 className="w-4 h-4" /> : <Eye className="w-4 h-4" />}</button>
+                   {/* Panel Tabs */}
+                   <button onClick={() => setLeftPanelTab('code')} className={`p-2 rounded transition-colors ${leftPanelTab === 'code' ? `${theme.accentBg} ${theme.accent}` : `${theme.textMuted} hover:text-white`}`} title="Code"><Code2 className="w-4 h-4"/></button>
+                   <button onClick={() => setLeftPanelTab('preview')} className={`p-2 rounded transition-colors ${leftPanelTab === 'preview' ? `${theme.accentBg} ${theme.accent}` : `${theme.textMuted} hover:text-white`}`} title="Preview"><Eye className="w-4 h-4"/></button>
+                   <button onClick={() => setLeftPanelTab('todos')} className={`p-2 rounded transition-colors ${leftPanelTab === 'todos' ? `${theme.accentBg} ${theme.accent}` : `${theme.textMuted} hover:text-white`} relative`} title="Plan & Tasks">
+                       <ListTodo className="w-4 h-4"/>
+                       {todoList.filter(t => t.status === 'pending').length > 0 && <span className="absolute top-1 right-1 w-2 h-2 bg-red-500 rounded-full"></span>}
+                   </button>
                 </div>
              </div>
 
              <div className={`flex-grow relative min-h-0 ${theme.codeBg}`}>
-                {showPreview ? <WebPreview files={activeProject.files} theme={theme} /> : <CodeEditor value={activeFile.content} onChange={updateActiveFileContent} language={activeFile.language.toLowerCase()} theme={theme} themeType={themeName} />}
+                {leftPanelTab === 'preview' && <WebPreview files={activeProject.files} theme={theme} />}
+                {leftPanelTab === 'todos' && <TodoList todos={todoList} theme={theme} onToggle={(id) => setTodoList(prev => prev.map(t => t.id === id ? {...t, status: t.status === 'completed' ? 'pending' : 'completed'} : t))} />}
+                {leftPanelTab === 'code' && <CodeEditor value={activeFile.content} onChange={updateActiveFileContent} language={activeFile.language.toLowerCase()} theme={theme} themeType={themeName} />}
              </div>
              
              {viewMode === 'classic' && (
@@ -528,6 +582,23 @@ const App: React.FC = () => {
                 )}
                 {error && <div className="w-full flex justify-center"><div className="bg-red-500/10 text-red-400 px-4 py-2 rounded-lg text-sm border border-red-500/20">{error}</div></div>}
              </div>
+
+             {/* PENDING DIFFS OVERLAY */}
+             {pendingDiffs.length > 0 && (
+                 <div className={`absolute bottom-20 left-4 right-4 z-20 ${theme.bgPanel} border ${theme.border} rounded-xl shadow-2xl flex flex-col max-h-[60%]`}>
+                     <div className={`p-3 border-b ${theme.border} flex justify-between items-center ${theme.bgPanelHeader}`}>
+                         <span className="text-xs font-bold uppercase flex items-center gap-2"><GitCompare className="w-4 h-4 text-blue-400"/> Review Proposed Changes ({pendingDiffs.length})</span>
+                         <span className={`text-[10px] ${theme.textMuted}`}>{pendingDiffs[0].fileName}</span>
+                     </div>
+                     <div className="flex-1 overflow-hidden p-2 bg-black/50">
+                         <DiffViewer original={pendingDiffs[0].originalContent} modified={pendingDiffs[0].newContent} theme={theme} />
+                     </div>
+                     <div className="p-3 border-t border-white/5 flex justify-end gap-2">
+                         <button onClick={() => handleRejectDiff(pendingDiffs[0].id)} className="px-4 py-2 rounded-lg text-xs font-bold bg-red-500/10 text-red-500 hover:bg-red-500/20">Reject</button>
+                         <button onClick={() => handleApplyDiff(pendingDiffs[0])} className="px-4 py-2 rounded-lg text-xs font-bold bg-green-500/10 text-green-500 hover:bg-green-500/20">Apply Change</button>
+                     </div>
+                 </div>
+             )}
 
              {viewMode === 'chat' && (
                  <div className={`p-4 border-t ${theme.border} ${theme.bgPanel} flex-shrink-0`}>

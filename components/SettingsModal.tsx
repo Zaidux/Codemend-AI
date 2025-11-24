@@ -30,7 +30,6 @@ const SettingsModal: React.FC<SettingsModalProps> = ({
   const [activeTab, setActiveTab] = React.useState<'general' | 'models' | 'roles'>('general');
   const [newRole, setNewRole] = React.useState<Partial<AgentRole>>({ name: '', description: '', systemPrompt: '' });
   const [isAddingRole, setIsAddingRole] = React.useState(false);
-  const [customModelMode, setCustomModelMode] = React.useState(false);
 
   const updateLLM = (key: keyof LLMConfig, value: any) => {
     setLlmConfig({ ...llmConfig, [key]: value });
@@ -56,6 +55,21 @@ const SettingsModal: React.FC<SettingsModalProps> = ({
       if (llmConfig.plannerRoleId === id) updateLLM('plannerRoleId', roles[0].id);
       if (llmConfig.coderRoleId === id) updateLLM('coderRoleId', roles[0].id);
   };
+
+  const modelOptions = AVAILABLE_MODELS[llmConfig.provider] || [];
+
+  const ModelSelect = ({ label, valueKey }: { label: string, valueKey: keyof LLMConfig }) => (
+      <div>
+        <label className={`block text-xs font-bold ${theme.textMuted} mb-1 uppercase tracking-wider`}>{label}</label>
+        <select 
+            value={llmConfig[valueKey] as string || ''}
+            onChange={(e) => updateLLM(valueKey, e.target.value)}
+            className={`w-full ${theme.bgApp} border ${theme.border} rounded-lg px-3 py-2 text-sm ${theme.textMain}`}
+        >
+            {modelOptions.map(m => <option key={m.id} value={m.id}>{m.name}</option>)}
+        </select>
+      </div>
+  );
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm animate-in fade-in duration-200">
@@ -162,50 +176,32 @@ const SettingsModal: React.FC<SettingsModalProps> = ({
                    placeholder={llmConfig.provider === 'gemini' ? "Optional (Uses default if empty)" : "sk-..."}
                    className={`w-full ${theme.bgApp} border ${theme.border} rounded-lg px-4 py-2 text-sm focus:ring-1 focus:ring-${theme.accent.replace('text-', '')}`}
                  />
-                 <p className="text-[10px] text-gray-500 mt-1">Keys are stored locally in your browser.</p>
               </div>
               
-              {/* Active Model */}
-              <div>
-                 <div className="flex justify-between items-center mb-2">
-                    <label className={`block text-xs font-bold ${theme.textMuted} uppercase tracking-wider flex items-center gap-2`}>
-                        <Cpu className="w-4 h-4" /> Active Model
-                    </label>
-                    <button onClick={() => setCustomModelMode(!customModelMode)} className="text-[10px] text-indigo-400 hover:text-indigo-300">
-                        {customModelMode ? "Select from list" : "Use custom ID"}
-                    </button>
-                 </div>
+              {/* Model Assignment */}
+              <div className="space-y-4 pt-4 border-t border-white/5">
+                 <h3 className={`text-sm font-bold ${theme.textMain} flex items-center gap-2`}>
+                   <Cpu className="w-4 h-4" /> Agent Model Assignments
+                 </h3>
+                 <p className={`text-xs ${theme.textMuted} mb-2`}>Assign different models to specific roles for cost/performance optimization.</p>
                  
-                 {customModelMode ? (
-                     <input 
-                        type="text"
-                        value={llmConfig.activeModelId}
-                        onChange={(e) => updateLLM('activeModelId', e.target.value)}
-                        placeholder="e.g. ft:gpt-3.5-turbo-0613:..."
-                        className={`w-full ${theme.bgApp} border ${theme.border} rounded-lg px-3 py-2 text-sm ${theme.textMain}`}
-                     />
-                 ) : (
-                     <select 
-                        value={llmConfig.activeModelId}
-                        onChange={(e) => updateLLM('activeModelId', e.target.value)}
-                        className={`w-full ${theme.bgApp} border ${theme.border} rounded-lg px-3 py-2 text-sm ${theme.textMain}`}
-                     >
-                        {AVAILABLE_MODELS[llmConfig.provider]?.map(m => (
-                        <option key={m.id} value={m.id}>{m.name}</option>
-                        ))}
-                     </select>
-                 )}
+                 <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                     <ModelSelect label="Planner / Architect Model" valueKey="plannerModelId" />
+                     <ModelSelect label="Coder / Developer Model" valueKey="coderModelId" />
+                     <ModelSelect label="Chat / Conversation Model" valueKey="chatModelId" />
+                     <ModelSelect label="Default / Fallback Model" valueKey="activeModelId" />
+                 </div>
               </div>
 
               {/* Pipeline Role Assignment */}
-              <div className={`p-4 rounded-xl border ${theme.border} bg-white/5`}>
+              <div className={`p-4 rounded-xl border ${theme.border} bg-white/5 mt-4`}>
                  <h3 className={`text-sm font-bold ${theme.textMain} mb-4 flex items-center gap-2`}>
-                   <UserCog className="w-4 h-4" /> Agent Pipeline
+                   <UserCog className="w-4 h-4" /> Role Definitions
                  </h3>
                  
                  <div className="space-y-4">
                     <div>
-                       <label className={`block text-xs ${theme.textMuted} mb-1`}>Planner Agent (Fix Mode)</label>
+                       <label className={`block text-xs ${theme.textMuted} mb-1`}>Planner Persona</label>
                        <select 
                          value={llmConfig.plannerRoleId}
                          onChange={(e) => updateLLM('plannerRoleId', e.target.value)}
@@ -218,7 +214,7 @@ const SettingsModal: React.FC<SettingsModalProps> = ({
                     </div>
 
                     <div>
-                       <label className={`block text-xs ${theme.textMuted} mb-1`}>Coder Agent (Implementation)</label>
+                       <label className={`block text-xs ${theme.textMuted} mb-1`}>Coder Persona</label>
                        <select 
                          value={llmConfig.coderRoleId}
                          onChange={(e) => updateLLM('coderRoleId', e.target.value)}

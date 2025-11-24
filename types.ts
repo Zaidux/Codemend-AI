@@ -93,13 +93,32 @@ export interface KnowledgeEntry {
     timestamp: number;
 }
 
+export interface TodoItem {
+    id: string;
+    task: string;
+    status: 'pending' | 'in_progress' | 'completed';
+    phase: string;
+}
+
+export interface FileDiff {
+    id: string;
+    fileName: string;
+    originalContent: string;
+    newContent: string;
+    type: 'create' | 'update' | 'delete';
+}
+
 export interface LLMConfig {
     provider: LLMProvider;
     apiKey?: string;
-    baseUrl?: string; // For OpenAI compatible
+    baseUrl?: string;
     plannerRoleId: string;
     coderRoleId: string;
-    activeModelId: string;
+    // Granular Model Assignment
+    activeModelId: string; // Fallback / Chat Default
+    plannerModelId: string;
+    coderModelId: string;
+    chatModelId: string;
 }
 
 export interface FixRequest {
@@ -114,6 +133,7 @@ export interface FixRequest {
   roles: AgentRole[];
   knowledgeBase: KnowledgeEntry[];
   useInternet: boolean;
+  currentTodos: TodoItem[];
 }
 
 export interface ToolCall {
@@ -127,4 +147,5 @@ export interface FixResponse {
   error?: string;
   toolCalls?: ToolCall[];
   contextSummarized?: boolean;
+  proposedChanges?: FileDiff[];
 }
