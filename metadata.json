@@ -1,0 +1,5 @@
+{
+  "name": "CodeMend AI",
+  "description": "An intelligent coding assistant that analyzes your code snippets, identifies errors, and generates optimized fixes with explanations using Gemini 2.5 Flash.",
+  "requestFramePermissions": []
+}
