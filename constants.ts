@@ -1,5 +1,5 @@
 
-import { CodeLanguage, ThemeType, ThemeConfig } from './types';
+import { CodeLanguage, ThemeType, ThemeConfig, LLMConfig, AgentRole } from './types';
 
 export const LANGUAGES: CodeLanguage[] = [
   CodeLanguage.JAVASCRIPT,
@@ -24,6 +24,62 @@ export const DEFAULT_INSTRUCTION = "Fix any bugs and improve code quality.";
 // Context Management Constants
 export const CONTEXT_THRESHOLD_CHARS = 25000; 
 export const SUMMARY_TOKEN_BUDGET = 1000; 
+
+export const DEFAULT_ROLES: AgentRole[] = [
+  {
+    id: 'role_architect',
+    name: 'Senior Architect',
+    description: 'Analyzes requirements and creates execution plans.',
+    systemPrompt: 'You are a Senior Software Architect. Analyze the user request and project context. Create a concise, step-by-step implementation plan. Do not write full code, focus on strategy and structure.',
+    isCustom: false
+  },
+  {
+    id: 'role_developer',
+    name: 'Full Stack Developer',
+    description: 'Writes code, fixes bugs, and executes plans.',
+    systemPrompt: 'You are an expert Full Stack Developer. Write clean, efficient, and well-documented code. Execute the provided plan or user instructions precisely.',
+    isCustom: false
+  },
+  {
+    id: 'role_qa',
+    name: 'QA Engineer',
+    description: 'Finds bugs and security vulnerabilities.',
+    systemPrompt: 'You are a QA and Security Engineer. Analyze the code strictly for bugs, edge cases, and security flaws. Provide a detailed report and fixed code.',
+    isCustom: false
+  },
+  {
+    id: 'role_tutor',
+    name: 'Code Tutor',
+    description: 'Explains concepts simply and patiently.',
+    systemPrompt: 'You are a patient and knowledgeable Code Tutor. Explain concepts clearly, use analogies, and break down complex logic into simple steps. Prioritize learning over just giving the answer.',
+    isCustom: false
+  }
+];
+
+export const DEFAULT_LLM_CONFIG: LLMConfig = {
+  provider: 'gemini',
+  plannerRoleId: 'role_architect',
+  coderRoleId: 'role_developer',
+  activeModelId: 'gemini-2.5-flash'
+};
+
+export const AVAILABLE_MODELS = {
+  gemini: [
+    { id: 'gemini-2.5-flash', name: 'Gemini 2.5 Flash' },
+    { id: 'gemini-2.0-flash-thinking-exp-01-21', name: 'Gemini 2.0 Flash Thinking' },
+    { id: 'gemini-3-pro-preview', name: 'Gemini 3.0 Pro' }
+  ],
+  openai: [
+    { id: 'gpt-4o', name: 'GPT-4o' },
+    { id: 'gpt-4o-mini', name: 'GPT-4o Mini' }
+  ],
+  openrouter: [
+    { id: 'anthropic/claude-3.5-sonnet', name: 'Claude 3.5 Sonnet' },
+    { id: 'anthropic/claude-3-haiku', name: 'Claude 3 Haiku' },
+    { id: 'deepseek/deepseek-r1', name: 'DeepSeek R1' },
+    { id: 'google/gemini-2.0-flash-001', name: 'Gemini 2.0 Flash (OpenRouter)' }
+  ]
+};
 
 // Syntax Highlight Colors for Overlay
 export const THEME_COLORS: Record<ThemeType, { keyword: string, string: string, function: string, comment: string, number: string }> = {
@@ -61,6 +117,13 @@ export const THEME_COLORS: Record<ThemeType, { keyword: string, string: string, 
     function: '#fca5a5', // Red
     comment: '#737373', // Neutral
     number: '#fbbf24' // Yellow
+  },
+  crimson: {
+    keyword: '#ef4444', // Red-500
+    string: '#f87171', // Red-400
+    function: '#dc2626', // Red-600
+    comment: '#525252', // Neutral Gray
+    number: '#b91c1c' // Red-700
   }
 };
 
@@ -144,5 +207,21 @@ export const THEMES: Record<ThemeType, ThemeConfig> = {
     codeBg: 'bg-neutral-950',
     scrollbarThumb: 'bg-neutral-600',
     gradientTitle: 'from-orange-400 to-amber-300'
+  },
+  crimson: {
+    name: 'Crimson',
+    bgApp: 'bg-black',
+    bgPanel: 'bg-neutral-950',
+    bgPanelHeader: 'bg-neutral-900/90',
+    border: 'border-red-900/30',
+    textMain: 'text-neutral-200',
+    textMuted: 'text-neutral-500',
+    accent: 'text-red-600',
+    accentBg: 'bg-red-900/10',
+    button: 'bg-red-700',
+    buttonHover: 'hover:bg-red-600',
+    codeBg: 'bg-black',
+    scrollbarThumb: 'bg-red-900',
+    gradientTitle: 'from-red-600 to-red-900'
   }
 };
