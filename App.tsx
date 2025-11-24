@@ -1,7 +1,7 @@
 
 import * as React from 'react';
 import { useState, useEffect, useRef } from 'react';
-import { Sparkles, Play, Wrench, X, Settings, MessageSquare, Plus, Trash2, Send, Sidebar as SidebarIcon, LayoutTemplate, FileCode, FolderOpen, FilePlus, Code2, ArrowLeft, Eye, Image as ImageIcon, Mic, StopCircle, BookOpen, Book, Globe, Brain, Check, ListTodo, GitCompare } from 'lucide-react';
+import { Sparkles, Play, Wrench, X, Settings, MessageSquare, Plus, Trash2, Send, Sidebar as SidebarIcon, LayoutTemplate, FileCode, FolderOpen, FilePlus, Code2, ArrowLeft, Eye, Image as ImageIcon, Mic, StopCircle, BookOpen, Book, Globe, Brain, Check, ListTodo, GitCompare, Github, Download } from 'lucide-react';
 import Header from './components/Header';
 import MarkdownRenderer from './components/MarkdownRenderer';
 import CodeEditor from './components/CodeEditor';
@@ -13,6 +13,7 @@ import DiffViewer from './components/DiffViewer';
 import { THEMES, DEFAULT_LLM_CONFIG, DEFAULT_ROLES } from './constants';
 import { CodeLanguage, AppMode, ThemeType, Session, ChatMessage, ViewMode, ProjectFile, LLMConfig, Project, Attachment, AgentRole, KnowledgeEntry, TodoItem, FileDiff } from './types';
 import { fixCodeWithGemini } from './services/llmService';
+import { fetchRepoContents } from './services/githubService';
 
 // --- FACTORY FUNCTIONS ---
 
@@ -63,6 +64,8 @@ const App: React.FC = () => {
   const [showSettings, setShowSettings] = useState<boolean>(false);
   const [isSidebarOpen, setIsSidebarOpen] = useState<boolean>(true);
   const [isEditorOpen, setIsEditorOpen] = useState<boolean>(false);
+  const [showGithubInput, setShowGithubInput] = useState(false);
+  const [repoInput, setRepoInput] = useState('');
   
   // Left Panel Tab State
   const [leftPanelTab, setLeftPanelTab] = useState<'code' | 'preview' | 'todos'>('code');
@@ -193,7 +196,6 @@ const App: React.FC = () => {
       if (diff.type === 'create') {
           const newFile = createNewFile(diff.fileName);
           newFile.content = diff.newContent;
-          // Simple lang detection
           if (diff.fileName.endsWith('.html')) newFile.language = CodeLanguage.HTML;
           else if (diff.fileName.endsWith('.css')) newFile.language = CodeLanguage.CSS;
           else if (diff.fileName.endsWith('.py')) newFile.language = CodeLanguage.PYTHON;
@@ -245,6 +247,27 @@ const App: React.FC = () => {
       setCurrentSessionId(s.id);
   };
   
+  const handleImportGithub = async () => {
+      if (!repoInput) return;
+      setIsLoading(true);
+      try {
+          const [owner, repo] = repoInput.split('/');
+          if (!owner || !repo) throw new Error("Invalid repo format. Use owner/repo");
+          const p = await fetchRepoContents(owner, repo, llmConfig.github?.personalAccessToken);
+          const s = createNewSession(p.id);
+          setProjects([p, ...projects]);
+          setSessions([...sessions, s]);
+          setCurrentProjectId(p.id);
+          setCurrentSessionId(s.id);
+          setShowGithubInput(false);
+          setRepoInput('');
+      } catch (e: any) {
+          alert(e.message);
+      } finally {
+          setIsLoading(false);
+      }
+  };
+
   const handleCreateSession = () => {
       const s = createNewSession(currentProjectId);
       setSessions([...sessions, s]);
@@ -337,8 +360,7 @@ const App: React.FC = () => {
       return;
     }
 
-    // Handle Tool Calls (Tasks & Knowledge)
-    // Pending Diffs are handled separately via proposedChanges
+    // Handle Tool Calls
     if (response.toolCalls && response.toolCalls.length > 0) {
        let newKnowledge = [...knowledgeBase];
        let newTodos = [...todoList];
@@ -369,12 +391,10 @@ const App: React.FC = () => {
        if (newKnowledge.length > knowledgeBase.length) setKnowledgeBase(newKnowledge);
        if (JSON.stringify(newTodos) !== JSON.stringify(todoList)) {
            setTodoList(newTodos);
-           // Auto-switch to Todos tab if task was added
            setLeftPanelTab('todos');
        }
     }
 
-    // Handle Proposed Changes (Diffs)
     if (response.proposedChanges && response.proposedChanges.length > 0) {
         setPendingDiffs(prev => [...prev, ...response.proposedChanges!]);
     }
@@ -416,8 +436,24 @@ const App: React.FC = () => {
                  <div className="p-2 space-y-2">
                      <div className={`px-2 py-2 text-xs font-bold uppercase ${theme.textMuted} flex justify-between`}>
                          <span>Projects</span>
+                         <button onClick={() => setShowGithubInput(!showGithubInput)} title="Clone from GitHub"><Github className="w-3 h-3 hover:text-white mr-2 inline" /></button>
                          <button onClick={handleCreateProject}><Plus className="w-3 h-3 hover:text-white" /></button>
                      </div>
+                     
+                     {showGithubInput && (
+                         <div className="px-2 mb-2 animate-in slide-in-from-top-2">
+                             <input 
+                                autoFocus
+                                value={repoInput}
+                                onChange={(e) => setRepoInput(e.target.value)}
+                                onKeyDown={(e) => e.key === 'Enter' && handleImportGithub()}
+                                placeholder="owner/repo"
+                                className={`w-full text-xs ${theme.bgApp} border ${theme.border} rounded px-2 py-1 mb-1`}
+                             />
+                             <button onClick={handleImportGithub} className={`w-full text-xs ${theme.button} text-white rounded py-1`}>Clone</button>
+                         </div>
+                     )}
+
                      <div className="space-y-1 mb-4">
                          {projects.map(p => (
                              <div key={p.id} onClick={() => setCurrentProjectId(p.id)} className={`flex justify-between px-3 py-2 rounded text-xs cursor-pointer ${activeProject.id === p.id ? `${theme.accentBg} ${theme.accent}` : `${theme.textMuted} hover:bg-white/5`}`}>
@@ -500,7 +536,6 @@ const App: React.FC = () => {
                    <button onClick={handleCreateFile} className={`p-1.5 rounded hover:bg-white/10 ${theme.textMuted}`}><Plus className="w-3.5 h-3.5" /></button>
                 </div>
                 <div className="flex items-center gap-1 pl-2 border-l border-white/5">
-                   {/* Panel Tabs */}
                    <button onClick={() => setLeftPanelTab('code')} className={`p-2 rounded transition-colors ${leftPanelTab === 'code' ? `${theme.accentBg} ${theme.accent}` : `${theme.textMuted} hover:text-white`}`} title="Code"><Code2 className="w-4 h-4"/></button>
                    <button onClick={() => setLeftPanelTab('preview')} className={`p-2 rounded transition-colors ${leftPanelTab === 'preview' ? `${theme.accentBg} ${theme.accent}` : `${theme.textMuted} hover:text-white`}`} title="Preview"><Eye className="w-4 h-4"/></button>
                    <button onClick={() => setLeftPanelTab('todos')} className={`p-2 rounded transition-colors ${leftPanelTab === 'todos' ? `${theme.accentBg} ${theme.accent}` : `${theme.textMuted} hover:text-white`} relative`} title="Plan & Tasks">
@@ -550,6 +585,7 @@ const App: React.FC = () => {
                         <Sparkles className="w-12 h-12 mb-4 text-yellow-500"/>
                         <p>Start a conversation, ask for fixes, or create new features.</p>
                         <p className="text-xs mt-2 opacity-70">Use #tags to recall learned concepts.</p>
+                        <a href="/README.md" target="_blank" className="text-xs mt-4 underline hover:text-white">View Documentation & License</a>
                     </div>
                 )}
                 

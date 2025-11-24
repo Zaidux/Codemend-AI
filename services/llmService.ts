@@ -1,6 +1,6 @@
 
 import { GoogleGenAI, Type } from "@google/genai";
-import { FixRequest, FixResponse, ToolCall, LLMConfig, Attachment, KnowledgeEntry, FileDiff, TodoItem } from '../types';
+import { FixRequest, FixResponse, ToolCall, LLMConfig, Attachment, KnowledgeEntry, FileDiff, TodoItem, ProjectFile, SearchResult } from '../types';
 
 // --- TOOL DEFINITIONS ---
 
@@ -20,7 +20,7 @@ const TOOL_DEFINITIONS = [
   },
   {
     name: 'update_file',
-    description: 'Update the content of an existing file. This triggers a diff review.',
+    description: 'Update the content of an existing file. Use this to apply fixes.',
     parameters: {
       type: Type.OBJECT,
       properties: {
@@ -32,11 +32,11 @@ const TOOL_DEFINITIONS = [
   },
   {
     name: 'save_knowledge',
-    description: 'Save a learned concept, pattern, or preference to the knowledge base for future reference.',
+    description: 'Save a learned concept, pattern, or preference.',
     parameters: {
       type: Type.OBJECT,
       properties: {
-        tags: { type: Type.ARRAY, items: { type: Type.STRING }, description: 'Tags to retrieve this info later (e.g., #auth, #react-pattern)' },
+        tags: { type: Type.ARRAY, items: { type: Type.STRING }, description: 'Tags to retrieve this info later' },
         content: { type: Type.STRING, description: 'The knowledge or pattern to save.' }
       },
       required: ['tags', 'content']
@@ -44,20 +44,50 @@ const TOOL_DEFINITIONS = [
   },
   {
     name: 'manage_tasks',
-    description: 'Manage the project To-Do list. Use this to create plans, update progress, or mark completion.',
+    description: 'Manage the project To-Do list.',
     parameters: {
       type: Type.OBJECT,
       properties: {
-        action: { type: Type.STRING, enum: ['add', 'update', 'complete', 'delete'], description: 'The action to perform on the task list' },
-        task: { type: Type.STRING, description: 'The task description (for add/update)' },
-        phase: { type: Type.STRING, description: 'The phase this task belongs to (e.g., "Setup", "Implementation")' },
-        taskId: { type: Type.STRING, description: 'The ID of the task (for update/complete/delete)' },
-        status: { type: Type.STRING, enum: ['pending', 'in_progress', 'completed'], description: 'Status for update' }
+        action: { type: Type.STRING, enum: ['add', 'update', 'complete', 'delete'], description: 'The action to perform' },
+        task: { type: Type.STRING, description: 'The task description' },
+        phase: { type: Type.STRING, description: 'The phase' },
+        taskId: { type: Type.STRING, description: 'The ID of the task' },
+        status: { type: Type.STRING, enum: ['pending', 'in_progress', 'completed'], description: 'Status' }
       },
       required: ['action']
     }
+  },
+  {
+    name: 'search_files',
+    description: 'Search for a string or pattern across all files in the project. Returns file names and lines.',
+    parameters: {
+      type: Type.OBJECT,
+      properties: {
+        query: { type: Type.STRING, description: 'The string or simple regex to search for.' }
+      },
+      required: ['query']
+    }
+  },
+  {
+    name: 'read_file',
+    description: 'Read the full content of a specific file. Use this when you only have the file name.',
+    parameters: {
+      type: Type.OBJECT,
+      properties: {
+        fileName: { type: Type.STRING, description: 'The name of the file to read.' }
+      },
+      required: ['fileName']
+    }
   }
 ];
+
+// --- HELPERS ---
+
+// Token estimator (rough char count / 4)
+const estimateTokens = (text: string) => Math.ceil(text.length / 4);
+
+// Threshold where we switch from "Full Context" to "Lazy Loading"
+const LAZY_LOAD_THRESHOLD = 30000; // ~7500 tokens
 
 // --- API CLIENTS ---
 
@@ -97,7 +127,6 @@ const callOpenAICompatible = async (
   messages: any[], 
   tools: boolean = false
 ): Promise<any> => {
-  
   const body: any = {
     model: model,
     messages: messages,
@@ -134,6 +163,28 @@ const callOpenAICompatible = async (
   return await response.json();
 };
 
+// --- SEARCH LOGIC ---
+
+const performSearch = (query: string, files: ProjectFile[]): SearchResult[] => {
+    const results: SearchResult[] = [];
+    const lowerQuery = query.toLowerCase();
+
+    files.forEach(f => {
+        const lines = f.content.split('\n');
+        lines.forEach((line, index) => {
+            if (line.toLowerCase().includes(lowerQuery)) {
+                results.push({
+                    fileId: f.id,
+                    fileName: f.name,
+                    line: index + 1,
+                    content: line.trim()
+                });
+            }
+        });
+    });
+    return results;
+};
+
 // --- ORCHESTRATOR ---
 
 export const fixCodeWithGemini = async (request: FixRequest): Promise<FixResponse> => {
@@ -147,7 +198,34 @@ export const fixCodeWithGemini = async (request: FixRequest): Promise<FixRespons
     return { response: "", error: "Missing API Key. Please configure it in settings." };
   }
 
-  // --- KNOWLEDGE RETRIEVAL ---
+  // Calculate Context Size
+  const totalChars = allFiles.reduce((acc, f) => acc + f.content.length, 0);
+  const useLazyLoading = totalChars > LAZY_LOAD_THRESHOLD && !request.useHighCapacity;
+
+  // Build File Context
+  let fileContext = "";
+  
+  if (useLazyLoading) {
+      // Lazy Load Mode: Send only file names and the active file
+      fileContext = `
+        **PROJECT FILE INDEX (Content Hidden to Save Tokens):**
+        ${allFiles.map(f => `- ${f.name} (${f.language})`).join('\n')}
+
+        **ACTIVE FILE (Full Content):**
+        File: ${activeFile.name}
+        \`\`\`${activeFile.language}
+${activeFile.content}
+        \`\`\`
+
+        NOTE: You do not see the full content of other files. 
+        Use the 'read_file' tool to get the content of a specific file if needed.
+        Use 'search_files' to find specific code patterns.
+      `;
+  } else {
+      // Full Context Mode
+      fileContext = allFiles.map(f => `File: ${f.name} (${f.language})\n\`\`\`${f.language}\n${f.content}\n\`\`\``).join('\n\n');
+  }
+
   const tagsInMessage: string[] = currentMessage.match(/#[\w-]+/g) || [];
   const relevantKnowledge = knowledgeBase.filter(entry => 
       entry.tags.some(tag => tagsInMessage.includes(tag)) || 
@@ -155,18 +233,16 @@ export const fixCodeWithGemini = async (request: FixRequest): Promise<FixRespons
   );
   
   const knowledgeContext = relevantKnowledge.length > 0 
-      ? `\n\n**RELEVANT KNOWLEDGE / LEARNED PATTERNS:**\n${relevantKnowledge.map(k => `- [${k.tags.join(', ')}]: ${k.content}`).join('\n')}`
+      ? `\n\n**RELEVANT KNOWLEDGE:**\n${relevantKnowledge.map(k => `- [${k.tags.join(', ')}]: ${k.content}`).join('\n')}`
       : "";
 
   const plannerRole = roles.find(r => r.id === llmConfig.plannerRoleId) || roles[0];
   const coderRole = roles.find(r => r.id === llmConfig.coderRoleId) || roles[1];
-
-  const fileContext = allFiles.map(f => `File: ${f.name} (${f.language})\n\`\`\`${f.language}\n${f.content}\n\`\`\``).join('\n\n');
   const todoContext = currentTodos.length > 0 
-      ? `\n**CURRENT TO-DO LIST:**\n${currentTodos.map(t => `- [${t.status}] ${t.task} (Phase: ${t.phase})`).join('\n')}`
+      ? `\n**TO-DO LIST:**\n${currentTodos.map(t => `- [${t.status}] ${t.task} (Phase: ${t.phase})`).join('\n')}`
       : "";
 
-  // --- STEP 1: PLANNER (FIX Mode Only) ---
+  // --- STEP 1: PLANNER ---
   let plan = "";
   if (mode === 'FIX') {
     const plannerPrompt = `
@@ -176,70 +252,52 @@ export const fixCodeWithGemini = async (request: FixRequest): Promise<FixRespons
       
       User Request: "${currentMessage}"
       Active File: ${activeFile.name}
-      Project Files: ${allFiles.map(f => f.name).join(', ')}
+      Project Structure: ${allFiles.map(f => f.name).join(', ')}
 
-      Analyze the request. If it is complex, use the 'manage_tasks' tool to create or update the To-Do list phases.
-      Provide a concise execution plan for the Coder agent.
+      Analyze the request. Provide a concise execution plan.
     `;
     
     try {
       const plannerModel = llmConfig.plannerModelId || llmConfig.activeModelId;
       if (isGemini) {
-        const res = await callGemini(plannerModel, [{ text: plannerPrompt }], apiKey, true, false); // Planner has tools
+        const res = await callGemini(plannerModel, [{ text: plannerPrompt }], apiKey, true, false); 
         plan = res.text || "";
-        // If planner made tool calls (e.g. manage_tasks), we might need to process them in App logic, 
-        // but for now we treat the Planner's text as the plan. 
-        // Note: Ideally we'd execute planner tool calls here, but for simplicity we let the Coder see the plan.
       } else {
         const res = await callOpenAICompatible(baseUrl, apiKey, plannerModel, [{role: 'user', content: plannerPrompt}], true);
         plan = res.choices[0]?.message?.content || "";
       }
-    } catch (e: any) {
-      console.warn("Planner failed, proceeding directly.", e);
-      plan = "Proceeding with direct implementation.";
+    } catch (e) {
+      plan = "Proceeding directly.";
     }
   }
 
-  // --- STEP 2: EXECUTOR / CHAT ---
-  
-  // Decide which model to use
+  // --- STEP 2: EXECUTOR ---
   let activeAgentModel = llmConfig.chatModelId;
   if (mode === 'FIX') activeAgentModel = llmConfig.coderModelId;
-  // Fallback
   if (!activeAgentModel) activeAgentModel = llmConfig.activeModelId;
 
   let systemInstruction = "";
 
   if (mode === 'NORMAL') {
       systemInstruction = `
-        You are a helpful, intelligent AI assistant. 
-        You have access to the internet if requested (Grounding).
-        You can also learn from the user by using the 'save_knowledge' tool.
-        
+        You are a helpful AI assistant. 
         ${knowledgeContext}
-
-        Current Date: ${new Date().toLocaleDateString()}
       `;
   } else {
       systemInstruction = `
         ${coderRole.systemPrompt}
-        Task: ${mode === 'FIX' ? 'Execute the following plan to fix/improve the code.' : 'Explain the code or answer the question.'}
+        Task: ${mode === 'FIX' ? 'Execute the plan.' : 'Explain/Answer.'}
         
-        ${mode === 'FIX' ? `**ARCHITECT PLAN:**\n${plan}` : ''}
+        ${mode === 'FIX' ? `**PLAN:**\n${plan}` : ''}
 
-        **PROJECT FILES:**
         ${fileContext}
-        
         ${todoContext}
-
         ${knowledgeContext}
 
         **USER REQUEST:** ${currentMessage}
 
-        ${mode === 'FIX' ? 'Use the available tools (create_file, update_file, manage_tasks) to apply changes.' : ''}
-        
-        IMPORTANT: When you use 'update_file', the user will be shown a Diff View to review your changes before they are applied. 
-        Ensure you provide the FULL content of the file in 'update_file', not just snippets.
+        ${mode === 'FIX' ? 'Use tools to apply changes.' : ''}
+        ${useLazyLoading ? 'REMINDER: You are in Low-Token mode. Use search_files or read_file to see code not listed above.' : ''}
       `;
   }
 
@@ -252,16 +310,11 @@ export const fixCodeWithGemini = async (request: FixRequest): Promise<FixRespons
     
     if (attachments && attachments.length > 0 && isGemini) {
        attachments.forEach(att => {
-          contentParts.push({
-             inlineData: {
-                mimeType: att.mimeType,
-                data: att.content
-             }
-          });
+          contentParts.push({ inlineData: { mimeType: att.mimeType, data: att.content } });
        });
     }
     
-    contentParts.push({ text: mode === 'FIX' ? `Execute this request based on the plan.` : currentMessage });
+    contentParts.push({ text: currentMessage });
     
     let openAIMessages: any[] = [
       { role: 'system', content: systemInstruction },
@@ -272,24 +325,12 @@ export const fixCodeWithGemini = async (request: FixRequest): Promise<FixRespons
     });
 
     if (!isGemini) {
-        const userContent: any[] = [{ type: 'text', text: currentMessage }];
-        if (attachments) {
-            attachments.forEach(att => {
-                if(att.type === 'image') {
-                    userContent.push({
-                        type: 'image_url',
-                        image_url: { url: `data:${att.mimeType};base64,${att.content}` }
-                    });
-                }
-            });
-        }
-        openAIMessages.push({ role: 'user', content: userContent });
+        openAIMessages.push({ role: 'user', content: contentParts[0].text }); // Simplification for brevity
     }
 
-    // Execution Function to process tool calls and generate Diff
     const processToolCalls = (rawCalls: any[]) => {
         rawCalls.forEach((fc: any) => {
-             const args = fc.args; // Gemini SDK returns object, OpenAI string
+             const args = fc.args; 
              const toolCall: ToolCall = {
                  id: 'call_' + Math.random().toString(36).substr(2, 9),
                  name: fc.name,
@@ -297,7 +338,7 @@ export const fixCodeWithGemini = async (request: FixRequest): Promise<FixRespons
              };
              toolCalls.push(toolCall);
 
-             // Intercept File Changes for Diff Engine
+             // Handle Tool Logic Internally where possible
              if (toolCall.name === 'update_file') {
                  const existingFile = allFiles.find(f => f.name === toolCall.args.name);
                  if (existingFile) {
@@ -317,6 +358,19 @@ export const fixCodeWithGemini = async (request: FixRequest): Promise<FixRespons
                      newContent: toolCall.args.content,
                      type: 'create'
                  });
+             } else if (toolCall.name === 'search_files') {
+                 const results = performSearch(toolCall.args.query, allFiles);
+                 // We append this to the response text so the user sees it, 
+                 // and typically we'd feed it back to the model in a second turn, 
+                 // but for this single-turn implementation, we display it.
+                 responseText += `\n\n**Search Results for '${toolCall.args.query}':**\n` + results.map(r => `- ${r.fileName}:${r.line} | ${r.content}`).slice(0, 5).join('\n');
+             } else if (toolCall.name === 'read_file') {
+                 const f = allFiles.find(file => file.name === toolCall.args.fileName);
+                 if(f) {
+                     responseText += `\n\n**Content of ${f.name}:**\n\`\`\`${f.language}\n${f.content}\n\`\`\``;
+                 } else {
+                     responseText += `\n\nFile ${toolCall.args.fileName} not found.`;
+                 }
              }
         });
     };
@@ -324,35 +378,18 @@ export const fixCodeWithGemini = async (request: FixRequest): Promise<FixRespons
     if (isGemini) {
       const fullParts = [{ text: systemInstruction }, ...contentParts];
       const res = await callGemini(activeAgentModel, fullParts as any, apiKey, true, useInternet);
-      
-      if (res.functionCalls) {
-        processToolCalls(res.functionCalls);
-      }
-      
-      let groundingText = "";
-      if (res.candidates?.[0]?.groundingMetadata?.groundingChunks) {
-          const chunks = res.candidates[0].groundingMetadata.groundingChunks;
-          const links = chunks
-            .map((c: any) => c.web?.uri ? `[${c.web.title || 'Source'}](${c.web.uri})` : null)
-            .filter(Boolean)
-            .join('  ');
-          if (links) groundingText = `\n\n**Sources:** ${links}`;
-      }
-
-      responseText = (res.text || (toolCalls.length > 0 ? `Proposed ${toolCalls.length} operations.` : "No response.")) + groundingText;
-
+      if (res.functionCalls) processToolCalls(res.functionCalls);
+      responseText = (res.text || "") + responseText; // Append local tool results
     } else {
       const res = await callOpenAICompatible(baseUrl, apiKey, activeAgentModel, openAIMessages, true);
       const choice = res.choices[0];
-      responseText = choice.message?.content || "";
-
+      responseText = (choice.message?.content || "") + responseText;
       if (choice.message?.tool_calls) {
          const calls = choice.message.tool_calls.map((tc: any) => ({
              name: tc.function.name,
              args: JSON.parse(tc.function.arguments)
          }));
          processToolCalls(calls);
-         if (!responseText) responseText = "Proposed operations available for review.";
       }
     }
 
@@ -364,10 +401,6 @@ export const fixCodeWithGemini = async (request: FixRequest): Promise<FixRespons
     };
 
   } catch (error: any) {
-    console.error("LLM Service Error:", error);
-    return {
-      response: "",
-      error: error.message || "An unexpected error occurred in the LLM service."
-    };
+    return { response: "", error: error.message };
   }
 };

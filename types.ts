@@ -108,6 +108,10 @@ export interface FileDiff {
     type: 'create' | 'update' | 'delete';
 }
 
+export interface GitHubConfig {
+    personalAccessToken?: string;
+}
+
 export interface LLMConfig {
     provider: LLMProvider;
     apiKey?: string;
@@ -119,6 +123,7 @@ export interface LLMConfig {
     plannerModelId: string;
     coderModelId: string;
     chatModelId: string;
+    github?: GitHubConfig;
 }
 
 export interface FixRequest {
@@ -142,10 +147,18 @@ export interface ToolCall {
     args: any;
 }
 
+export interface SearchResult {
+    fileId: string;
+    fileName: string;
+    line: number;
+    content: string;
+}
+
 export interface FixResponse {
   response: string;
   error?: string;
   toolCalls?: ToolCall[];
   contextSummarized?: boolean;
   proposedChanges?: FileDiff[];
+  searchResults?: SearchResult[];
 }

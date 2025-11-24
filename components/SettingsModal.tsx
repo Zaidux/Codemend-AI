@@ -1,6 +1,6 @@
 
 import * as React from 'react';
-import { Settings, Zap, X, LayoutTemplate, MessageSquare, Database, Cpu, Key, UserCog, Plus, Trash2 } from 'lucide-react';
+import { Settings, Zap, X, LayoutTemplate, MessageSquare, Database, Cpu, Key, UserCog, Plus, Trash2, Github } from 'lucide-react';
 import { ThemeConfig, ThemeType, ViewMode, LLMConfig, LLMProvider, AgentRole } from '../types';
 import { THEMES, AVAILABLE_MODELS } from '../constants';
 
@@ -33,6 +33,10 @@ const SettingsModal: React.FC<SettingsModalProps> = ({
 
   const updateLLM = (key: keyof LLMConfig, value: any) => {
     setLlmConfig({ ...llmConfig, [key]: value });
+  };
+  
+  const updateGitHub = (token: string) => {
+      setLlmConfig({ ...llmConfig, github: { ...llmConfig.github, personalAccessToken: token } });
   };
 
   const handleAddRole = () => {
@@ -167,7 +171,7 @@ const SettingsModal: React.FC<SettingsModalProps> = ({
               {/* API Key */}
               <div>
                  <label className={`block text-xs font-bold ${theme.textMuted} mb-2 uppercase tracking-wider flex items-center gap-2`}>
-                    <Key className="w-4 h-4" /> API Key
+                    <Key className="w-4 h-4" /> Provider API Key
                  </label>
                  <input 
                    type="password" 
@@ -177,13 +181,27 @@ const SettingsModal: React.FC<SettingsModalProps> = ({
                    className={`w-full ${theme.bgApp} border ${theme.border} rounded-lg px-4 py-2 text-sm focus:ring-1 focus:ring-${theme.accent.replace('text-', '')}`}
                  />
               </div>
+
+              {/* GitHub Token */}
+              <div className="mt-4 pt-4 border-t border-white/5">
+                 <label className={`block text-xs font-bold ${theme.textMuted} mb-2 uppercase tracking-wider flex items-center gap-2`}>
+                    <Github className="w-4 h-4" /> GitHub Token (Optional)
+                 </label>
+                 <input 
+                   type="password" 
+                   value={llmConfig.github?.personalAccessToken || ''}
+                   onChange={(e) => updateGitHub(e.target.value)}
+                   placeholder="ghp_... (Required for Private Repos / Higher Rate Limits)"
+                   className={`w-full ${theme.bgApp} border ${theme.border} rounded-lg px-4 py-2 text-sm focus:ring-1 focus:ring-${theme.accent.replace('text-', '')}`}
+                 />
+                 <p className={`text-xs ${theme.textMuted} mt-1`}>Used to clone repositories and (future) commit changes.</p>
+              </div>
               
               {/* Model Assignment */}
               <div className="space-y-4 pt-4 border-t border-white/5">
                  <h3 className={`text-sm font-bold ${theme.textMain} flex items-center gap-2`}>
                    <Cpu className="w-4 h-4" /> Agent Model Assignments
                  </h3>
-                 <p className={`text-xs ${theme.textMuted} mb-2`}>Assign different models to specific roles for cost/performance optimization.</p>
                  
                  <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                      <ModelSelect label="Planner / Architect Model" valueKey="plannerModelId" />
