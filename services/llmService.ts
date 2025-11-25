@@ -1,4 +1,3 @@
-
 import { GoogleGenAI, Type } from "@google/genai";
 import { FixRequest, FixResponse, ToolCall, LLMConfig, Attachment, KnowledgeEntry, FileDiff, TodoItem, ProjectFile, SearchResult } from '../types';
 
@@ -96,13 +95,13 @@ const callGemini = async (model: string, parts: any[], apiKey: string, tools: bo
   const config: any = {
     thinkingConfig: { thinkingBudget: 0 }
   };
-  
+
   const activeTools: any[] = [];
-  
+
   if (tools) {
     activeTools.push({ functionDeclarations: TOOL_DEFINITIONS });
   }
-  
+
   if (useInternet) {
     activeTools.push({ googleSearch: {} });
   }
@@ -125,12 +124,14 @@ const callOpenAICompatible = async (
   apiKey: string, 
   model: string, 
   messages: any[], 
-  tools: boolean = false
+  tools: boolean = false,
+  customHeaders: Record<string, string> = {}
 ): Promise<any> => {
   const body: any = {
     model: model,
     messages: messages,
     temperature: 0.1,
+    stream: false,
   };
 
   if (tools) {
@@ -142,16 +143,28 @@ const callOpenAICompatible = async (
         parameters: t.parameters
       }
     }));
+    body.tool_choice = 'auto';
+  }
+
+  const headers: HeadersInit = {
+    'Content-Type': 'application/json',
+    ...customHeaders
+  };
+
+  // Only add Authorization if API key is provided
+  if (apiKey) {
+    headers['Authorization'] = `Bearer ${apiKey}`;
+  }
+
+  // Add OpenRouter specific headers
+  if (baseUrl.includes('openrouter.ai')) {
+    headers['HTTP-Referer'] = 'https://codemend.ai';
+    headers['X-Title'] = 'CodeMend AI';
   }
 
   const response = await fetch(`${baseUrl}/chat/completions`, {
     method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      'Authorization': `Bearer ${apiKey}`,
-      'HTTP-Referer': 'https://codemend.ai',
-      'X-Title': 'CodeMend AI'
-    },
+    headers,
     body: JSON.stringify(body)
   });
 
@@ -161,6 +174,57 @@ const callOpenAICompatible = async (
   }
 
   return await response.json();
+};
+
+// --- LOCAL MODEL SUPPORT ---
+
+interface LocalProviderConfig {
+  name: string;
+  baseUrl: string;
+  models: string[];
+  requiresAuth: boolean;
+  customHeaders?: Record<string, string>;
+}
+
+const LOCAL_PROVIDERS: Record<string, LocalProviderConfig> = {
+  ollama: {
+    name: 'Ollama',
+    baseUrl: 'http://localhost:11434',
+    models: ['codellama:7b', 'llama2:7b', 'mistral:7b', 'phi3:latest'],
+    requiresAuth: false
+  },
+  lmstudio: {
+    name: 'LM Studio',
+    baseUrl: 'http://localhost:1234',
+    models: ['local-model'], // LM Studio uses whatever model is loaded
+    requiresAuth: false
+  },
+  textwebui: {
+    name: 'Text Generation WebUI',
+    baseUrl: 'http://localhost:5000',
+    models: ['local-model'],
+    requiresAuth: false
+  },
+  huggingface: {
+    name: 'Hugging Face Inference',
+    baseUrl: 'https://api-inference.huggingface.co',
+    models: ['mistralai/Mistral-7B-Instruct-v0.2', 'codellama/CodeLlama-7b-Instruct-hf'],
+    requiresAuth: true
+  },
+  custom: {
+    name: 'Custom Endpoint',
+    baseUrl: '', // User provides
+    models: ['custom-model'],
+    requiresAuth: false
+  }
+};
+
+const getLocalProviderConfig = (provider: string, customUrl?: string): LocalProviderConfig => {
+  const config = LOCAL_PROVIDERS[provider] || LOCAL_PROVIDERS.custom;
+  if (provider === 'custom' && customUrl) {
+    return { ...config, baseUrl: customUrl };
+  }
+  return config;
 };
 
 // --- SEARCH LOGIC ---
@@ -191,11 +255,32 @@ export const fixCodeWithGemini = async (request: FixRequest): Promise<FixRespons
   const { llmConfig, history, currentMessage, allFiles, activeFile, mode, attachments, roles, knowledgeBase, useInternet, currentTodos } = request;
 
   const isGemini = llmConfig.provider === 'gemini';
-  const apiKey = llmConfig.apiKey || (isGemini ? process.env.API_KEY : '');
-  const baseUrl = llmConfig.provider === 'openrouter' ? 'https://openrouter.ai/api/v1' : (llmConfig.baseUrl || 'https://api.openai.com/v1');
+  const isLocal = llmConfig.provider === 'local';
+  
+  let apiKey = llmConfig.apiKey;
+  let baseUrl = llmConfig.baseUrl;
 
-  if (!apiKey) {
+  // Handle local provider configuration
+  if (isLocal) {
+    const localConfig = getLocalProviderConfig(llmConfig.provider, baseUrl);
+    baseUrl = localConfig.baseUrl;
+    
+    if (localConfig.requiresAuth && !apiKey) {
+      return { response: "", error: `API Key required for ${localConfig.name}` };
+    }
+  } else if (llmConfig.provider === 'openrouter') {
+    baseUrl = 'https://openrouter.ai/api/v1';
+  } else if (llmConfig.provider === 'openai') {
+    baseUrl = baseUrl || 'https://api.openai.com/v1';
+  }
+
+  // Validate API key for providers that require it
+  if (!isLocal && !isGemini && !apiKey && llmConfig.provider !== 'custom') {
     return { response: "", error: "Missing API Key. Please configure it in settings." };
+  }
+
+  if (isGemini && !apiKey) {
+    apiKey = process.env.API_KEY || '';
   }
 
   // Calculate Context Size
@@ -204,7 +289,7 @@ export const fixCodeWithGemini = async (request: FixRequest): Promise<FixRespons
 
   // Build File Context
   let fileContext = "";
-  
+
   if (useLazyLoading) {
       // Lazy Load Mode: Send only file names and the active file
       fileContext = `
@@ -231,7 +316,7 @@ ${activeFile.content}
       entry.tags.some(tag => tagsInMessage.includes(tag)) || 
       entry.tags.includes('#global')
   );
-  
+
   const knowledgeContext = relevantKnowledge.length > 0 
       ? `\n\n**RELEVANT KNOWLEDGE:**\n${relevantKnowledge.map(k => `- [${k.tags.join(', ')}]: ${k.content}`).join('\n')}`
       : "";
@@ -256,17 +341,28 @@ ${activeFile.content}
 
       Analyze the request. Provide a concise execution plan.
     `;
-    
+
     try {
       const plannerModel = llmConfig.plannerModelId || llmConfig.activeModelId;
       if (isGemini) {
-        const res = await callGemini(plannerModel, [{ text: plannerPrompt }], apiKey, true, false); 
+        const res = await callGemini(plannerModel, [{ text: plannerPrompt }], apiKey!, true, false); 
         plan = res.text || "";
       } else {
-        const res = await callOpenAICompatible(baseUrl, apiKey, plannerModel, [{role: 'user', content: plannerPrompt}], true);
+        const localConfig = isLocal ? getLocalProviderConfig(llmConfig.provider, baseUrl) : null;
+        const customHeaders = localConfig?.customHeaders || {};
+        
+        const res = await callOpenAICompatible(
+          baseUrl!, 
+          apiKey!, 
+          plannerModel, 
+          [{role: 'user', content: plannerPrompt}], 
+          true,
+          customHeaders
+        );
         plan = res.choices[0]?.message?.content || "";
       }
     } catch (e) {
+      console.warn('Planner failed, proceeding directly:', e);
       plan = "Proceeding directly.";
     }
   }
@@ -307,25 +403,25 @@ ${activeFile.content}
     const proposedChanges: FileDiff[] = [];
 
     const contentParts: any[] = [];
-    
+
     if (attachments && attachments.length > 0 && isGemini) {
        attachments.forEach(att => {
           contentParts.push({ inlineData: { mimeType: att.mimeType, data: att.content } });
        });
     }
-    
+
     contentParts.push({ text: currentMessage });
-    
+
     let openAIMessages: any[] = [
       { role: 'system', content: systemInstruction },
     ];
-    
+
     history.slice(-6).forEach(h => {
         openAIMessages.push({ role: h.role === 'model' ? 'assistant' : 'user', content: h.content });
     });
 
     if (!isGemini) {
-        openAIMessages.push({ role: 'user', content: contentParts[0].text }); // Simplification for brevity
+        openAIMessages.push({ role: 'user', content: contentParts[0].text });
     }
 
     const processToolCalls = (rawCalls: any[]) => {
@@ -360,9 +456,6 @@ ${activeFile.content}
                  });
              } else if (toolCall.name === 'search_files') {
                  const results = performSearch(toolCall.args.query, allFiles);
-                 // We append this to the response text so the user sees it, 
-                 // and typically we'd feed it back to the model in a second turn, 
-                 // but for this single-turn implementation, we display it.
                  responseText += `\n\n**Search Results for '${toolCall.args.query}':**\n` + results.map(r => `- ${r.fileName}:${r.line} | ${r.content}`).slice(0, 5).join('\n');
              } else if (toolCall.name === 'read_file') {
                  const f = allFiles.find(file => file.name === toolCall.args.fileName);
@@ -377,19 +470,31 @@ ${activeFile.content}
 
     if (isGemini) {
       const fullParts = [{ text: systemInstruction }, ...contentParts];
-      const res = await callGemini(activeAgentModel, fullParts as any, apiKey, true, useInternet);
+      const res = await callGemini(activeAgentModel, fullParts as any, apiKey!, true, useInternet);
       if (res.functionCalls) processToolCalls(res.functionCalls);
-      responseText = (res.text || "") + responseText; // Append local tool results
+      responseText = (res.text || "") + responseText;
     } else {
-      const res = await callOpenAICompatible(baseUrl, apiKey, activeAgentModel, openAIMessages, true);
+      const localConfig = isLocal ? getLocalProviderConfig(llmConfig.provider, baseUrl) : null;
+      const customHeaders = localConfig?.customHeaders || {};
+      
+      const res = await callOpenAICompatible(
+        baseUrl!, 
+        apiKey!, 
+        activeAgentModel, 
+        openAIMessages, 
+        true,
+        customHeaders
+      );
+      
       const choice = res.choices[0];
       responseText = (choice.message?.content || "") + responseText;
+      
       if (choice.message?.tool_calls) {
-         const calls = choice.message.tool_calls.map((tc: any) => ({
-             name: tc.function.name,
-             args: JSON.parse(tc.function.arguments)
-         }));
-         processToolCalls(calls);
+        const calls = choice.message.tool_calls.map((tc: any) => ({
+          name: tc.function.name,
+          args: JSON.parse(tc.function.arguments)
+        }));
+        processToolCalls(calls);
       }
     }
 
@@ -401,6 +506,7 @@ ${activeFile.content}
     };
 
   } catch (error: any) {
+    console.error('LLM Error:', error);
     return { response: "", error: error.message };
   }
 };
