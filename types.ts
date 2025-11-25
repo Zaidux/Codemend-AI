@@ -1,4 +1,3 @@
-
 export enum CodeLanguage {
   JAVASCRIPT = 'JavaScript',
   TYPESCRIPT = 'TypeScript',
@@ -20,7 +19,7 @@ export enum CodeLanguage {
 export type AppMode = 'FIX' | 'EXPLAIN' | 'CHAT' | 'NORMAL';
 export type ThemeType = 'cosmic' | 'aurora' | 'forest' | 'midnight' | 'sunset' | 'crimson';
 export type ViewMode = 'classic' | 'chat';
-export type LLMProvider = 'gemini' | 'openai' | 'openrouter';
+export type LLMProvider = 'gemini' | 'openai' | 'openrouter' | 'local';
 
 export interface ThemeConfig {
   name: string;
@@ -115,7 +114,7 @@ export interface GitHubConfig {
 export interface LLMConfig {
     provider: LLMProvider;
     apiKey?: string;
-    baseUrl?: string;
+    baseUrl?: string; // Used for local/custom providers
     plannerRoleId: string;
     coderRoleId: string;
     // Granular Model Assignment
