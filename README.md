@@ -27,7 +27,7 @@ CodeMend AI is a world-class, intelligent coding assistant that runs directly in
 
 ### Local Development
 ```bash
-git clone [your-repo]
+git clone https://github.com/Zaidux/Codemend-AI
 npm install
 npm run dev
 ```
@@ -74,7 +74,7 @@ Installation
 
 ```bash
 # Clone and install
-git clone 
+git clone https://github.com/Zaidux/Codemend-AI
 cd codemend-ai
 npm install
 
