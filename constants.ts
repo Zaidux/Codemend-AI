@@ -79,8 +79,20 @@ export const AVAILABLE_MODELS = {
   openrouter: [
     { id: 'anthropic/claude-3.5-sonnet', name: 'Claude 3.5 Sonnet' },
     { id: 'anthropic/claude-3-haiku', name: 'Claude 3 Haiku' },
-    { id: 'deepseek/deepseek-r1', name: 'DeepSeek R1' },
-    { id: 'google/gemini-2.0-flash-001', name: 'Gemini 2.0 Flash (OpenRouter)' }
+    { id: 'deepseek/deepseek-r1:free', name: 'DeepSeek R1' },
+    { id: 'google/gemini-2.0-flash-001', name: 'Gemini 2.0 Flash (OpenRouter)' },
+    { id: 'google/gemini-3-pro-preview',
+name: 'Gemini 3.0 Preview (Open router)' },
+    { id: 'kwaipilot/kat-coder-pro:free',
+name: 'Kat Coder Pro V1 (OpenRouter)' }
+  ],
+  local: [
+    { id: 'codellama:7b', name: 'CodeLlama 7B (Ollama)' },
+    { id: 'llama2:7b', name: 'Llama 2 7B (Ollama)' },
+    { id: 'mistral:7b', name: 'Mistral 7B (Ollama)' },
+    { id: 'phi3:latest', name: 'Phi-3 (Ollama)' },
+    { id: 'local-model', name: 'Current Loaded Model (LM Studio)' },
+    { id: 'custom-model', name: 'Custom Model' }
   ]
 };
 
