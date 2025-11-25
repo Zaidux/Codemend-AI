@@ -1,64 +1,136 @@
-
 # CodeMend AI
 
-CodeMend AI is a world-class, intelligent coding assistant designed to help developers fix bugs, explain complex logic, and architect solutions using advanced LLM capabilities (Gemini, OpenAI, Anthropic).
+CodeMend AI is a world-class, intelligent coding assistant that runs directly in your browser or as a mobile app. Fix bugs, explain code, and build features with AI assistance - no server required!
 
 ## 🚀 Features
 
-*   **Multi-Provider Support:** Seamlessly switch between Google Gemini, OpenAI (GPT-4), and OpenRouter (Claude, DeepSeek).
-*   **Agentic Workflows:** Specialized roles for Planning (Architect) and Coding (Developer) to handle complex tasks.
-*   **GitHub Integration:** Clone repositories directly into the workspace to analyze and fix code.
-*   **Live Web Preview:** Instantly preview HTML/CSS/JS projects in a sandboxed iframe.
-*   **Diff Engine:** Review AI-proposed changes line-by-line before applying them.
-*   **Knowledge Base:** Teach the AI new patterns or preferences, which it recalls via `#tags`.
-*   **Multimodal Input:** Chat using text, voice, and images.
-*   **Token Optimization:** Smart context management ("Lazy Loading") for large projects using file search tools.
+*   **Multi-Provider Support:** Gemini, OpenAI, OpenRouter (Claude, DeepSeek) + **Local Models** (Ollama, LM Studio)
+*   **Agentic Workflows:** Specialized Planner (Architect) and Coder (Developer) roles
+*   **GitHub Integration:** Clone repositories directly into your workspace
+*   **Live Web Preview:** Instant preview of HTML/CSS/JS projects
+*   **Smart Diff Engine:** Review AI changes before applying
+*   **Knowledge Base:** Teach AI patterns recallable via `#tags`
+*   **Multimodal Input:** Text, voice, and image support
+*   **Mobile Ready:** Works as PWA or native mobile app
+*   **Token Optimization:** Smart context management for large projects
 
-## 🛠️ Usage
+## 🎯 Quick Start
 
-### Getting Started
-1.  **Select Provider:** Open Settings -> APIs & Models. Enter your API Key for Gemini (Free tier available), OpenAI, or OpenRouter.
-2.  **Create Project:** Use the Sidebar to create a new project or **Clone from GitHub** using the Github icon.
-3.  **Chat:** Type your request. Use specific modes:
-    *   **Fix:** The AI creates a plan and attempts to modify files.
-    *   **Explain:** The AI explains the code context.
-    *   **Normal:** General conversation with Internet access.
+### Web Version (Recommended)
+1. Visit [your-app-url] (can be hosted anywhere - GitHub Pages, Netlify, etc.)
+2. Configure your AI provider in Settings
+3. Start coding!
 
-### Advanced Features
-*   **#tags:** Save a snippet to the Knowledge Base (e.g., `#auth-pattern`). Use `#auth-pattern` in chat to inject that context.
-*   **Diff Review:** When the AI uses `update_file`, a diff overlay appears. Accept or Reject changes.
-*   **Roles:** In Settings, you can create custom personas (e.g., "Rust Expert") and assign them to the Planner or Coder agents.
+### Mobile App
+1. **PWA**: Visit in mobile browser, tap "Add to Home Screen"
+2. **Native**: Download from app stores (coming soon)
 
-## 🏗️ Architecture
+### Local Development
+```bash
+git clone [your-repo]
+npm install
+npm run dev
+```
 
-CodeMend is built with:
-*   **React 18 & TypeScript:** For a robust, type-safe frontend.
-*   **Tailwind CSS:** For a highly customizable, theme-aware UI.
-*   **PrismJS:** For syntax highlighting.
-*   **Gemini SDK & Fetch API:** For communicating with LLM providers.
-*   **LocalStorage:** For client-side persistence of projects and sessions.
+🛠️ User Guide
 
-## 🔮 Future Roadmap
+Getting Started
 
-*   **GitHub Commit:** Push changes back to the repository directly from the UI.
-*   **Terminal Integration:** A web-based terminal for running scripts (via WebContainers).
-*   **Team Sync:** Real-time collaboration on projects.
-*   **Plugin System:** Allow third-party tools to be registered with the Agent.
+1. Select AI Provider: Settings → APIs & Models → Choose Gemini (free), OpenAI, or Local (Ollama)
+2. Create Project: New project or clone from GitHub using the repo icon
+3. Start Coding: Use the code editor and chat with AI
 
-## 📄 License & Terms
+Modes & Features
 
-**Copyright (c) 2024 CodeMend AI Author**
+· Fix Mode: AI creates plan and modifies files
+· Explain Mode: Detailed code explanations
+· Normal Mode: General chat with optional internet access
+· #tags: Save/recall knowledge (e.g., #auth-pattern)
+· Diff Review: Accept/reject AI changes visually
 
-### 1. Educational & Personal Use
-Permission is hereby granted, free of charge, to any person obtaining a copy of this software (the "Software"), to deal in the Software without restriction, including without limitation the rights to use, copy, modify, merge, publish, and distribute copies of the Software for **private, educational, or non-profit purposes**.
+Mobile Usage
 
-### 2. Commercial Use & Royalties
-Use of this Software for commercial purposes (including but not limited to: using the Software to build proprietary products for sale, offering the Software as a paid service, or integrating it into a for-profit workflow) requires a **Commercial License**.
+· Touch-optimized interface
+· Offline capability for existing projects
+· Voice input for hands-free coding
+· File system access on mobile
 
-Developers or Organizations intending to use CodeMend AI commercially must negotiate a Royalty Agreement with the original author.
+🏗️ Architecture
 
-### 3. Donations
-If you find this project useful for your learning or personal projects, consider supporting the developer:
-*   [Link to Donation Platform Placeholder]
+Frontend: React 19 + TypeScript + Vite
+Styling: Tailwind CSS + Custom Theme System
+AI: Multi-provider LLM orchestration
+Storage: LocalStorage (offline-first)
+Mobile: PWA + Capacitor ready
 
-THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED.
+🔧 Developer Setup
+
+Prerequisites
+
+· Node.js 18+
+· AI API key (optional - works with local models)
+
+Installation
+
+```bash
+# Clone and install
+git clone 
+cd codemend-ai
+npm install
+
+# Development
+npm run dev
+
+# Build for production
+npm run build
+
+# Mobile build (optional)
+npm install @capacitor/core @capacitor/cli
+npx cap add android ios
+```
+
+Local Model Setup
+
+1. Install Ollama
+2. Pull a model: ollama pull codellama:7b
+3. In CodeMend: Settings → Provider → Local → URL: http://localhost:11434
+
+🚀 Deployment
+
+Web Hosting (Free Options)
+
+· GitHub Pages: npm run build + deploy /dist
+· Netlify: Drag & drop dist folder
+· Vercel: Connect GitHub repo
+
+Mobile Stores
+
+· Android: Build with Capacitor → Upload to Play Store
+· iOS: Build with Capacitor → Submit to App Store
+
+🔮 Roadmap
+
+· GitHub Commits: Push changes directly from UI
+· Terminal Integration: Web-based terminal via WebContainers
+· Team Collaboration: Real-time multi-user editing
+· Plugin System: Extensible tool ecosystem
+· Desktop App: Electron wrapper
+
+📄 License
+
+Copyright (c) 2024 CodeMend AI
+
+Usage Rights
+
+· Personal/Educational: Free forever
+· Commercial Use: Requires license agreement
+· Modifications: Allowed with attribution
+
+Support
+
+If this project helps you, consider supporting development:
+
+· [Donation Link]
+· [Sponsorship Options]
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND.
