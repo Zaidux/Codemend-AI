@@ -3,7 +3,8 @@ import { FixRequest, FixResponse, ToolCall, LLMConfig, Attachment, KnowledgeEntr
 
 // --- TOOL DEFINITIONS ---
 
-const TOOL_DEFINITIONS = [
+// Gemini-compatible tool definitions
+const GEMINI_TOOL_DEFINITIONS = [
   {
     name: 'create_file',
     description: 'Create a new file in the project workspace.',
@@ -80,13 +81,105 @@ const TOOL_DEFINITIONS = [
   }
 ];
 
+// OpenAI-compatible tool definitions
+const OPENAI_TOOL_DEFINITIONS = [
+  {
+    type: 'function' as const,
+    function: {
+      name: 'create_file',
+      description: 'Create a new file in the project workspace.',
+      parameters: {
+        type: 'object',
+        properties: {
+          name: { type: 'string', description: 'The name of the file (e.g., utils.js, styles.css)' },
+          content: { type: 'string', description: 'The content of the file' },
+          language: { type: 'string', description: 'The programming language of the file' }
+        },
+        required: ['name', 'content']
+      }
+    }
+  },
+  {
+    type: 'function' as const,
+    function: {
+      name: 'update_file',
+      description: 'Update the content of an existing file. Use this to apply fixes.',
+      parameters: {
+        type: 'object',
+        properties: {
+          name: { type: 'string', description: 'The name of the file to update' },
+          content: { type: 'string', description: 'The new full content of the file' }
+        },
+        required: ['name', 'content']
+      }
+    }
+  },
+  {
+    type: 'function' as const,
+    function: {
+      name: 'save_knowledge',
+      description: 'Save a learned concept, pattern, or preference.',
+      parameters: {
+        type: 'object',
+        properties: {
+          tags: { type: 'array', items: { type: 'string' }, description: 'Tags to retrieve this info later' },
+          content: { type: 'string', description: 'The knowledge or pattern to save.' }
+        },
+        required: ['tags', 'content']
+      }
+    }
+  },
+  {
+    type: 'function' as const,
+    function: {
+      name: 'manage_tasks',
+      description: 'Manage the project To-Do list.',
+      parameters: {
+        type: 'object',
+        properties: {
+          action: { type: 'string', enum: ['add', 'update', 'complete', 'delete'], description: 'The action to perform' },
+          task: { type: 'string', description: 'The task description' },
+          phase: { type: 'string', description: 'The phase' },
+          taskId: { type: 'string', description: 'The ID of the task' },
+          status: { type: 'string', enum: ['pending', 'in_progress', 'completed'], description: 'Status' }
+        },
+        required: ['action']
+      }
+    }
+  },
+  {
+    type: 'function' as const,
+    function: {
+      name: 'search_files',
+      description: 'Search for a string or pattern across all files in the project. Returns file names and lines.',
+      parameters: {
+        type: 'object',
+        properties: {
+          query: { type: 'string', description: 'The string or simple regex to search for.' }
+        },
+        required: ['query']
+      }
+    }
+  },
+  {
+    type: 'function' as const,
+    function: {
+      name: 'read_file',
+      description: 'Read the full content of a specific file. Use this when you only have the file name.',
+      parameters: {
+        type: 'object',
+        properties: {
+          fileName: { type: 'string', description: 'The name of the file to read.' }
+        },
+        required: ['fileName']
+      }
+    }
+  }
+];
+
 // --- HELPERS ---
-
-// Token estimator (rough char count / 4)
 const estimateTokens = (text: string) => Math.ceil(text.length / 4);
-
-// Threshold where we switch from "Full Context" to "Lazy Loading"
-const LAZY_LOAD_THRESHOLD = 30000; // ~7500 tokens
+const LAZY_LOAD_THRESHOLD = 30000;
 
 // --- API CLIENTS ---
 
@@ -99,7 +192,7 @@ const callGemini = async (model: string, parts: any[], apiKey: string, tools: bo
   const activeTools: any[] = [];
 
   if (tools) {
-    activeTools.push({ functionDeclarations: TOOL_DEFINITIONS });
+    activeTools.push({ functionDeclarations: GEMINI_TOOL_DEFINITIONS });
   }
 
   if (useInternet) {
@@ -110,13 +203,17 @@ const callGemini = async (model: string, parts: any[], apiKey: string, tools: bo
     config.tools = activeTools;
   }
 
-  const response = await ai.models.generateContent({
-    model: model,
-    contents: { parts: parts } as any,
-    config
-  });
-
-  return response;
+  try {
+    const response = await ai.models.generateContent({
+      model: model,
+      contents: { parts: parts } as any,
+      config
+    });
+    return response;
+  } catch (error: any) {
+    console.error('Gemini API Error:', error);
+    throw new Error(`Gemini API Error: ${error.message}`);
+  }
 };
 
 const callOpenAICompatible = async (
@@ -135,14 +232,7 @@ const callOpenAICompatible = async (
   };
 
   if (tools) {
-    body.tools = TOOL_DEFINITIONS.map(t => ({
-      type: 'function',
-      function: {
-        name: t.name,
-        description: t.description,
-        parameters: t.parameters
-      }
-    }));
+    body.tools = OPENAI_TOOL_DEFINITIONS;
     body.tool_choice = 'auto';
   }
 
@@ -151,33 +241,35 @@ const callOpenAICompatible = async (
     ...customHeaders
   };
 
-  // Only add Authorization if API key is provided
   if (apiKey) {
     headers['Authorization'] = `Bearer ${apiKey}`;
   }
 
-  // Add OpenRouter specific headers
   if (baseUrl.includes('openrouter.ai')) {
     headers['HTTP-Referer'] = 'https://codemend.ai';
     headers['X-Title'] = 'CodeMend AI';
   }
 
-  const response = await fetch(`${baseUrl}/chat/completions`, {
-    method: 'POST',
-    headers,
-    body: JSON.stringify(body)
-  });
+  try {
+    const response = await fetch(`${baseUrl}/chat/completions`, {
+      method: 'POST',
+      headers,
+      body: JSON.stringify(body)
+    });
 
-  if (!response.ok) {
-    const err = await response.text();
-    throw new Error(`API Error ${response.status}: ${err}`);
+    if (!response.ok) {
+      const err = await response.text();
+      throw new Error(`API Error ${response.status}: ${err}`);
+    }
+
+    return await response.json();
+  } catch (error: any) {
+    console.error('OpenAI API Error:', error);
+    throw new Error(`OpenAI API Error: ${error.message}`);
   }
-
-  return await response.json();
 };
 
 // --- LOCAL MODEL SUPPORT ---
-
 interface LocalProviderConfig {
   name: string;
   baseUrl: string;
@@ -196,7 +288,7 @@ const LOCAL_PROVIDERS: Record<string, LocalProviderConfig> = {
   lmstudio: {
     name: 'LM Studio',
     baseUrl: 'http://localhost:1234',
-    models: ['local-model'], // LM Studio uses whatever model is loaded
+    models: ['local-model'],
     requiresAuth: false
   },
   textwebui: {
@@ -213,7 +305,7 @@ const LOCAL_PROVIDERS: Record<string, LocalProviderConfig> = {
   },
   custom: {
     name: 'Custom Endpoint',
-    baseUrl: '', // User provides
+    baseUrl: '',
     models: ['custom-model'],
     requiresAuth: false
   }
@@ -228,43 +320,41 @@ const getLocalProviderConfig = (provider: string, customUrl?: string): LocalProv
 };
 
 // --- SEARCH LOGIC ---
-
 const performSearch = (query: string, files: ProjectFile[]): SearchResult[] => {
-    const results: SearchResult[] = [];
-    const lowerQuery = query.toLowerCase();
+  const results: SearchResult[] = [];
+  const lowerQuery = query.toLowerCase();
 
-    files.forEach(f => {
-        const lines = f.content.split('\n');
-        lines.forEach((line, index) => {
-            if (line.toLowerCase().includes(lowerQuery)) {
-                results.push({
-                    fileId: f.id,
-                    fileName: f.name,
-                    line: index + 1,
-                    content: line.trim()
-                });
-            }
+  files.forEach(f => {
+    const lines = f.content.split('\n');
+    lines.forEach((line, index) => {
+      if (line.toLowerCase().includes(lowerQuery)) {
+        results.push({
+          fileId: f.id,
+          fileName: f.name,
+          line: index + 1,
+          content: line.trim()
         });
+      }
     });
-    return results;
+  });
+  return results;
 };
 
 // --- ORCHESTRATOR ---
-
 export const fixCodeWithGemini = async (request: FixRequest): Promise<FixResponse> => {
   const { llmConfig, history, currentMessage, allFiles, activeFile, mode, attachments, roles, knowledgeBase, useInternet, currentTodos } = request;
 
   const isGemini = llmConfig.provider === 'gemini';
   const isLocal = llmConfig.provider === 'local';
-  
+
   let apiKey = llmConfig.apiKey;
   let baseUrl = llmConfig.baseUrl;
 
   // Handle local provider configuration
   if (isLocal) {
-    const localConfig = getLocalProviderConfig(llmConfig.provider, baseUrl);
-    baseUrl = localConfig.baseUrl;
-    
+    const localConfig = getLocalProviderConfig('custom', baseUrl); // Use custom for any local
+    baseUrl = localConfig.baseUrl || baseUrl;
+
     if (localConfig.requiresAuth && !apiKey) {
       return { response: "", error: `API Key required for ${localConfig.name}` };
     }
@@ -274,13 +364,16 @@ export const fixCodeWithGemini = async (request: FixRequest): Promise<FixRespons
     baseUrl = baseUrl || 'https://api.openai.com/v1';
   }
 
-  // Validate API key for providers that require it
-  if (!isLocal && !isGemini && !apiKey && llmConfig.provider !== 'custom') {
+  // Validate API key
+  if ((llmConfig.provider === 'openai' || llmConfig.provider === 'openrouter') && !apiKey) {
     return { response: "", error: "Missing API Key. Please configure it in settings." };
   }
 
   if (isGemini && !apiKey) {
     apiKey = process.env.API_KEY || '';
+    if (!apiKey) {
+      return { response: "", error: "Missing Gemini API Key. Please configure it in settings." };
+    }
   }
 
   // Calculate Context Size
@@ -291,72 +384,70 @@ export const fixCodeWithGemini = async (request: FixRequest): Promise<FixRespons
   let fileContext = "";
 
   if (useLazyLoading) {
-      // Lazy Load Mode: Send only file names and the active file
-      fileContext = `
-        **PROJECT FILE INDEX (Content Hidden to Save Tokens):**
-        ${allFiles.map(f => `- ${f.name} (${f.language})`).join('\n')}
+    fileContext = `
+PROJECT FILE INDEX (Content Hidden to Save Tokens):
+${allFiles.map(f => `- ${f.name} (${f.language})`).join('\n')}
 
-        **ACTIVE FILE (Full Content):**
-        File: ${activeFile.name}
-        \`\`\`${activeFile.language}
+ACTIVE FILE (Full Content):
+File: ${activeFile.name}
+\`\`\`${activeFile.language}
 ${activeFile.content}
-        \`\`\`
+\`\`\`
 
-        NOTE: You do not see the full content of other files. 
-        Use the 'read_file' tool to get the content of a specific file if needed.
-        Use 'search_files' to find specific code patterns.
-      `;
+NOTE: You do not see the full content of other files. 
+Use the 'read_file' tool to get the content of a specific file if needed.
+Use 'search_files' to find specific code patterns.
+    `;
   } else {
-      // Full Context Mode
-      fileContext = allFiles.map(f => `File: ${f.name} (${f.language})\n\`\`\`${f.language}\n${f.content}\n\`\`\``).join('\n\n');
+    fileContext = allFiles.map(f => `File: ${f.name} (${f.language})\n\`\`\`${f.language}\n${f.content}\n\`\`\``).join('\n\n');
   }
 
   const tagsInMessage: string[] = currentMessage.match(/#[\w-]+/g) || [];
   const relevantKnowledge = knowledgeBase.filter(entry => 
-      entry.tags.some(tag => tagsInMessage.includes(tag)) || 
-      entry.tags.includes('#global')
+    entry.tags.some(tag => tagsInMessage.includes(tag)) || 
+    entry.tags.includes('#global')
   );
 
   const knowledgeContext = relevantKnowledge.length > 0 
-      ? `\n\n**RELEVANT KNOWLEDGE:**\n${relevantKnowledge.map(k => `- [${k.tags.join(', ')}]: ${k.content}`).join('\n')}`
-      : "";
+    ? `\n\nRELEVANT KNOWLEDGE:\n${relevantKnowledge.map(k => `- [${k.tags.join(', ')}]: ${k.content}`).join('\n')}`
+    : "";
 
   const plannerRole = roles.find(r => r.id === llmConfig.plannerRoleId) || roles[0];
   const coderRole = roles.find(r => r.id === llmConfig.coderRoleId) || roles[1];
   const todoContext = currentTodos.length > 0 
-      ? `\n**TO-DO LIST:**\n${currentTodos.map(t => `- [${t.status}] ${t.task} (Phase: ${t.phase})`).join('\n')}`
-      : "";
+    ? `\nTO-DO LIST:\n${currentTodos.map(t => `- [${t.status}] ${t.task} (Phase: ${t.phase})`).join('\n')}`
+    : "";
 
   // --- STEP 1: PLANNER ---
   let plan = "";
   if (mode === 'FIX') {
     const plannerPrompt = `
-      ${plannerRole.systemPrompt}
-      ${knowledgeContext}
-      ${todoContext}
-      
-      User Request: "${currentMessage}"
-      Active File: ${activeFile.name}
-      Project Structure: ${allFiles.map(f => f.name).join(', ')}
+${plannerRole.systemPrompt}
+${knowledgeContext}
+${todoContext}
 
-      Analyze the request. Provide a concise execution plan.
+User Request: "${currentMessage}"
+Active File: ${activeFile.name}
+Project Structure: ${allFiles.map(f => f.name).join(', ')}
+
+Analyze the request. Provide a concise execution plan.
     `;
 
     try {
       const plannerModel = llmConfig.plannerModelId || llmConfig.activeModelId;
       if (isGemini) {
-        const res = await callGemini(plannerModel, [{ text: plannerPrompt }], apiKey!, true, false); 
+        const res = await callGemini(plannerModel, [{ text: plannerPrompt }], apiKey!, false, false); // No tools for planner
         plan = res.text || "";
       } else {
-        const localConfig = isLocal ? getLocalProviderConfig(llmConfig.provider, baseUrl) : null;
+        const localConfig = isLocal ? getLocalProviderConfig('custom', baseUrl) : null;
         const customHeaders = localConfig?.customHeaders || {};
-        
+
         const res = await callOpenAICompatible(
           baseUrl!, 
           apiKey!, 
           plannerModel, 
           [{role: 'user', content: plannerPrompt}], 
-          true,
+          false, // No tools for planner
           customHeaders
         );
         plan = res.choices[0]?.message?.content || "";
@@ -375,26 +466,26 @@ ${activeFile.content}
   let systemInstruction = "";
 
   if (mode === 'NORMAL') {
-      systemInstruction = `
-        You are a helpful AI assistant. 
-        ${knowledgeContext}
-      `;
+    systemInstruction = `
+You are a helpful AI assistant. 
+${knowledgeContext}
+    `;
   } else {
-      systemInstruction = `
-        ${coderRole.systemPrompt}
-        Task: ${mode === 'FIX' ? 'Execute the plan.' : 'Explain/Answer.'}
-        
-        ${mode === 'FIX' ? `**PLAN:**\n${plan}` : ''}
+    systemInstruction = `
+${coderRole.systemPrompt}
+Task: ${mode === 'FIX' ? 'Execute the plan.' : 'Explain/Answer.'}
 
-        ${fileContext}
-        ${todoContext}
-        ${knowledgeContext}
+${mode === 'FIX' ? `PLAN:\n${plan}` : ''}
 
-        **USER REQUEST:** ${currentMessage}
+${fileContext}
+${todoContext}
+${knowledgeContext}
 
-        ${mode === 'FIX' ? 'Use tools to apply changes.' : ''}
-        ${useLazyLoading ? 'REMINDER: You are in Low-Token mode. Use search_files or read_file to see code not listed above.' : ''}
-      `;
+USER REQUEST: ${currentMessage}
+
+${mode === 'FIX' ? 'Use tools to apply changes.' : ''}
+${useLazyLoading ? 'REMINDER: You are in Low-Token mode. Use search_files or read_file to see code not listed above.' : ''}
+    `;
   }
 
   try {
@@ -405,9 +496,9 @@ ${activeFile.content}
     const contentParts: any[] = [];
 
     if (attachments && attachments.length > 0 && isGemini) {
-       attachments.forEach(att => {
-          contentParts.push({ inlineData: { mimeType: att.mimeType, data: att.content } });
-       });
+      attachments.forEach(att => {
+        contentParts.push({ inlineData: { mimeType: att.mimeType, data: att.content } });
+      });
     }
 
     contentParts.push({ text: currentMessage });
@@ -416,67 +507,81 @@ ${activeFile.content}
       { role: 'system', content: systemInstruction },
     ];
 
-    history.slice(-6).forEach(h => {
-        openAIMessages.push({ role: h.role === 'model' ? 'assistant' : 'user', content: h.content });
+    // Add recent history (last 4 messages to save tokens)
+    history.slice(-4).forEach(h => {
+      openAIMessages.push({ 
+        role: h.role === 'model' ? 'assistant' : 'user', 
+        content: h.content 
+      });
     });
 
     if (!isGemini) {
-        openAIMessages.push({ role: 'user', content: contentParts[0].text });
+      openAIMessages.push({ role: 'user', content: currentMessage });
     }
 
     const processToolCalls = (rawCalls: any[]) => {
-        rawCalls.forEach((fc: any) => {
-             const args = fc.args; 
-             const toolCall: ToolCall = {
-                 id: 'call_' + Math.random().toString(36).substr(2, 9),
-                 name: fc.name,
-                 args: args
-             };
-             toolCalls.push(toolCall);
+      rawCalls.forEach((fc: any) => {
+        const args = typeof fc.args === 'string' ? JSON.parse(fc.args) : fc.args;
+        const toolCall: ToolCall = {
+          id: 'call_' + Math.random().toString(36).substr(2, 9),
+          name: fc.name,
+          args: args
+        };
+        toolCalls.push(toolCall);
 
-             // Handle Tool Logic Internally where possible
-             if (toolCall.name === 'update_file') {
-                 const existingFile = allFiles.find(f => f.name === toolCall.args.name);
-                 if (existingFile) {
-                     proposedChanges.push({
-                         id: crypto.randomUUID(),
-                         fileName: toolCall.args.name,
-                         originalContent: existingFile.content,
-                         newContent: toolCall.args.content,
-                         type: 'update'
-                     });
-                 }
-             } else if (toolCall.name === 'create_file') {
-                 proposedChanges.push({
-                     id: crypto.randomUUID(),
-                     fileName: toolCall.args.name,
-                     originalContent: '',
-                     newContent: toolCall.args.content,
-                     type: 'create'
-                 });
-             } else if (toolCall.name === 'search_files') {
-                 const results = performSearch(toolCall.args.query, allFiles);
-                 responseText += `\n\n**Search Results for '${toolCall.args.query}':**\n` + results.map(r => `- ${r.fileName}:${r.line} | ${r.content}`).slice(0, 5).join('\n');
-             } else if (toolCall.name === 'read_file') {
-                 const f = allFiles.find(file => file.name === toolCall.args.fileName);
-                 if(f) {
-                     responseText += `\n\n**Content of ${f.name}:**\n\`\`\`${f.language}\n${f.content}\n\`\`\``;
-                 } else {
-                     responseText += `\n\nFile ${toolCall.args.fileName} not found.`;
-                 }
-             }
-        });
+        // Handle Tool Logic Internally where possible
+        if (toolCall.name === 'update_file') {
+          const existingFile = allFiles.find(f => f.name === toolCall.args.name);
+          if (existingFile) {
+            proposedChanges.push({
+              id: crypto.randomUUID(),
+              fileName: toolCall.args.name,
+              originalContent: existingFile.content,
+              newContent: toolCall.args.content,
+              type: 'update'
+            });
+          } else {
+            responseText += `\n\nNote: File "${toolCall.args.name}" not found for update.`;
+          }
+        } else if (toolCall.name === 'create_file') {
+          proposedChanges.push({
+            id: crypto.randomUUID(),
+            fileName: toolCall.args.name,
+            originalContent: '',
+            newContent: toolCall.args.content,
+            type: 'create'
+          });
+        } else if (toolCall.name === 'search_files') {
+          const results = performSearch(toolCall.args.query, allFiles);
+          if (results.length > 0) {
+            responseText += `\n\nSearch Results for '${toolCall.args.query}':\n` + 
+              results.slice(0, 8).map(r => `- ${r.fileName}:${r.line} | ${r.content}`).join('\n');
+          } else {
+            responseText += `\n\nNo results found for '${toolCall.args.query}'`;
+          }
+        } else if (toolCall.name === 'read_file') {
+          const f = allFiles.find(file => file.name === toolCall.args.fileName);
+          if (f) {
+            responseText += `\n\nContent of ${f.name}:\n\`\`\`${f.language}\n${f.content}\n\`\`\``;
+          } else {
+            responseText += `\n\nFile "${toolCall.args.fileName}" not found.`;
+          }
+        }
+      });
     };
 
     if (isGemini) {
       const fullParts = [{ text: systemInstruction }, ...contentParts];
-      const res = await callGemini(activeAgentModel, fullParts as any, apiKey!, true, useInternet);
-      if (res.functionCalls) processToolCalls(res.functionCalls);
+      const res = await callGemini(activeAgentModel, fullParts, apiKey!, true, useInternet);
+      
+      if (res.functionCalls && res.functionCalls.length > 0) {
+        processToolCalls(res.functionCalls);
+      }
       responseText = (res.text || "") + responseText;
     } else {
-      const localConfig = isLocal ? getLocalProviderConfig(llmConfig.provider, baseUrl) : null;
+      const localConfig = isLocal ? getLocalProviderConfig('custom', baseUrl) : null;
       const customHeaders = localConfig?.customHeaders || {};
-      
+
       const res = await callOpenAICompatible(
         baseUrl!, 
         apiKey!, 
@@ -485,10 +590,10 @@ ${activeFile.content}
         true,
         customHeaders
       );
-      
+
       const choice = res.choices[0];
       responseText = (choice.message?.content || "") + responseText;
-      
+
       if (choice.message?.tool_calls) {
         const calls = choice.message.tool_calls.map((tc: any) => ({
           name: tc.function.name,
@@ -499,14 +604,17 @@ ${activeFile.content}
     }
 
     return {
-      response: mode === 'FIX' && plan ? `**Plan:**\n${plan}\n\n---\n\n${responseText}` : responseText,
-      toolCalls,
-      proposedChanges,
-      contextSummarized: false
+      response: responseText.trim(),
+      toolCalls: toolCalls.length > 0 ? toolCalls : undefined,
+      proposedChanges: proposedChanges.length > 0 ? proposedChanges : undefined,
+      contextSummarized: useLazyLoading
     };
 
   } catch (error: any) {
     console.error('LLM Error:', error);
-    return { response: "", error: error.message };
+    return { 
+      response: "", 
+      error: `AI Service Error: ${error.message}. Please check your API key and try again.` 
+    };
   }
 };
