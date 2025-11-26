@@ -45,12 +45,64 @@ export interface ProjectFile {
     content: string;
 }
 
+export interface FileChange {
+  type: 'added' | 'modified' | 'deleted' | 'conflict';
+  file: ProjectFile;
+  previousContent: string;
+  currentContent: string;
+  conflict?: boolean;
+}
+
+export interface GitCommit {
+  id: string;
+  message: string;
+  author: string;
+  timestamp: number;
+  changes: FileChange[];
+  branch: string;
+}
+
+export interface GitBranch {
+  name: string;
+  head: string;
+  commits: string[];
+}
+
+export interface GitStatus {
+  hasGit: boolean;
+  changes: FileChange[];
+  currentBranch: string;
+  branches: string[];
+  ahead: number;
+  behind: number;
+}
+
+export interface ProjectMetadata {
+  description?: string;
+  tags: string[];
+  version: string;
+  archived?: boolean;
+  archivedAt?: number;
+}
+
+export interface ProjectStructure {
+  fileTypes: Record<string, number>;
+  dependencies: string[];
+  entryPoints: string[];
+  architecture: string;
+  totalFiles: number;
+  totalSize: number;
+}
+
 export interface Project {
     id: string;
     name: string;
     files: ProjectFile[];
     activeFileId: string;
     lastModified: number;
+    metadata?: ProjectMetadata;
+    structure?: ProjectStructure;
+    gitStatus?: GitStatus;
 }
 
 export interface Attachment {
