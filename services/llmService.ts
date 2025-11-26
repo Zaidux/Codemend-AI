@@ -185,6 +185,15 @@ const OPENAI_TOOL_DEFINITIONS = [
 const estimateTokens = (text: string) => Math.ceil(text.length / 4);
 const LAZY_LOAD_THRESHOLD = 30000;
 
+// Generate UUID for tool calls and changes
+const generateUUID = (): string => {
+  return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, function(c) {
+    const r = Math.random() * 16 | 0;
+    const v = c == 'x' ? r : (r & 0x3 | 0x8);
+    return v.toString(16);
+  });
+};
+
 // --- API CLIENTS ---
 
 const callGemini = async (model: string, parts: any[], apiKey: string, tools: boolean = false, useInternet: boolean = false): Promise<any> => {
@@ -264,8 +273,19 @@ const callOpenAICompatible = async (
     });
 
     if (!response.ok) {
-      const err = await response.text();
-      throw new Error(`API Error ${response.status}: ${err}`);
+      const errorText = await response.text();
+      let errorMessage = `API Error ${response.status}: ${errorText}`;
+      
+      // Provide more user-friendly error messages
+      if (response.status === 401) {
+        errorMessage = 'Invalid API Key. Please check your API key in settings.';
+      } else if (response.status === 429) {
+        errorMessage = 'Rate limit exceeded. Please try again later.';
+      } else if (response.status === 404) {
+        errorMessage = 'Model not found. Please check the model name.';
+      }
+      
+      throw new Error(errorMessage);
     }
 
     return await response.json();
@@ -274,7 +294,7 @@ const callOpenAICompatible = async (
       throw error;
     }
     console.error('OpenAI API Error:', error);
-    throw new Error(`OpenAI API Error: ${error.message}`);
+    throw new Error(`API Error: ${error.message}`);
   }
 };
 
@@ -325,8 +345,16 @@ const callOpenAICompatibleStream = async (
     });
 
     if (!response.ok) {
-      const err = await response.text();
-      throw new Error(`API Error ${response.status}: ${err}`);
+      const errorText = await response.text();
+      let errorMessage = `API Error ${response.status}: ${errorText}`;
+      
+      if (response.status === 401) {
+        errorMessage = 'Invalid API Key. Please check your API key in settings.';
+      } else if (response.status === 429) {
+        errorMessage = 'Rate limit exceeded. Please try again later.';
+      }
+      
+      throw new Error(errorMessage);
     }
 
     const reader = response.body?.getReader();
@@ -349,6 +377,8 @@ const callOpenAICompatibleStream = async (
           if (line.startsWith('data: ') && !line.includes('data: [DONE]')) {
             try {
               const data = JSON.parse(line.slice(6));
+              
+              // Handle content
               const content = data.choices[0]?.delta?.content;
               if (content) {
                 fullContent += content;
@@ -359,6 +389,14 @@ const callOpenAICompatibleStream = async (
               const toolCalls = data.choices[0]?.delta?.tool_calls;
               if (toolCalls && onToolCall) {
                 onToolCall(toolCalls);
+              }
+
+              // Handle finish reason
+              const finishReason = data.choices[0]?.finish_reason;
+              if (finishReason === 'length') {
+                onContent('\n\n[Response truncated due to length limits]');
+              } else if (finishReason === 'content_filter') {
+                onContent('\n\n[Response filtered by content safety]');
               }
             } catch (e) {
               // Ignore JSON parse errors for incomplete chunks
@@ -376,7 +414,7 @@ const callOpenAICompatibleStream = async (
       throw error;
     }
     console.error('OpenAI Stream Error:', error);
-    throw new Error(`OpenAI Stream Error: ${error.message}`);
+    throw new Error(`Stream Error: ${error.message}`);
   }
 };
 
@@ -433,22 +471,25 @@ const getLocalProviderConfig = (provider: string, customUrl?: string): LocalProv
 // --- SEARCH LOGIC ---
 const performSearch = (query: string, files: ProjectFile[]): SearchResult[] => {
   const results: SearchResult[] = [];
+  const safeFiles = files || [];
   const lowerQuery = query.toLowerCase();
 
-  files.forEach(f => {
+  safeFiles.forEach(f => {
+    if (!f || !f.content) return;
+    
     const lines = f.content.split('\n');
     lines.forEach((line, index) => {
       if (line.toLowerCase().includes(lowerQuery)) {
         results.push({
-          fileId: f.id,
-          fileName: f.name,
+          fileId: f.id || generateUUID(),
+          fileName: f.name || 'unknown',
           line: index + 1,
           content: line.trim()
         });
       }
     });
   });
-  return results;
+  return results.slice(0, 20); // Limit results
 };
 
 // --- STREAMING INTERFACE ---
@@ -467,11 +508,31 @@ export const fixCodeWithGemini = async (request: FixRequest): Promise<FixRespons
     roles, knowledgeBase, useInternet, currentTodos, projectSummary, useCompression, contextTransfer 
   } = request;
 
+  // Validate critical inputs
+  if (!llmConfig) {
+    return { response: "", error: "Missing LLM configuration" };
+  }
+
+  if (!currentMessage?.trim()) {
+    return { response: "", error: "Empty message" };
+  }
+
+  const safeAllFiles = allFiles || [];
+  const safeActiveFile = activeFile || safeAllFiles[0];
+  const safeHistory = history || [];
+  const safeRoles = roles || [];
+  const safeKnowledgeBase = knowledgeBase || [];
+  const safeCurrentTodos = currentTodos || [];
+
+  if (!safeActiveFile) {
+    return { response: "", error: "No active file available" };
+  }
+
   const isGemini = llmConfig.provider === 'gemini';
   const isLocal = llmConfig.provider === 'local';
 
-  let apiKey = llmConfig.apiKey;
-  let baseUrl = llmConfig.baseUrl;
+  let apiKey = llmConfig.apiKey || '';
+  let baseUrl = llmConfig.baseUrl || '';
 
   // Handle local provider configuration
   if (isLocal) {
@@ -487,20 +548,21 @@ export const fixCodeWithGemini = async (request: FixRequest): Promise<FixRespons
     baseUrl = baseUrl || 'https://api.openai.com/v1';
   }
 
-  // Validate API key
+  // Validate API key for providers that require it
   if ((llmConfig.provider === 'openai' || llmConfig.provider === 'openrouter') && !apiKey) {
     return { response: "", error: "Missing API Key. Please configure it in settings." };
   }
 
   if (isGemini && !apiKey) {
-    apiKey = process.env.API_KEY || '';
+    // Try environment variable as fallback
+    apiKey = process.env.GEMINI_API_KEY || process.env.API_KEY || '';
     if (!apiKey) {
       return { response: "", error: "Missing Gemini API Key. Please configure it in settings." };
     }
   }
 
   // Calculate Context Size and apply compression if needed
-  const totalChars = allFiles.reduce((acc, f) => acc + f.content.length, 0);
+  const totalChars = safeAllFiles.reduce((acc, f) => acc + (f.content?.length || 0), 0);
   const shouldCompress = useCompression || (totalChars > LAZY_LOAD_THRESHOLD && !request.useHighCapacity);
 
   let fileContext = "";
@@ -509,8 +571,7 @@ export const fixCodeWithGemini = async (request: FixRequest): Promise<FixRespons
   if (shouldCompress && projectSummary) {
     // Use compressed context
     usedCompression = true;
-    
-    // Filter relevant files
+
     const compressionConfig = llmConfig.compression || {
       enabled: true,
       maxFiles: 15,
@@ -518,40 +579,40 @@ export const fixCodeWithGemini = async (request: FixRequest): Promise<FixRespons
       autoSummarize: true,
       preserveStructure: true
     };
-    
+
     const relevantFiles = contextService.filterRelevantFiles(
-      allFiles, 
+      safeAllFiles, 
       currentMessage, 
-      activeFile, 
+      safeActiveFile, 
       compressionConfig
     );
 
     fileContext = `
 COMPRESSED PROJECT CONTEXT:
-${projectSummary.summary}
+${projectSummary.summary || 'No summary available'}
 
-KEY FILES (${relevantFiles.length} of ${allFiles.length} files shown):
+KEY FILES (${relevantFiles.length} of ${safeAllFiles.length} files shown):
 ${relevantFiles.map(f => `- ${f.name} (${f.language})`).join('\n')}
 
 ACTIVE FILE (Full Content):
-File: ${activeFile.name}
-\`\`\`${activeFile.language}
-${activeFile.content}
+File: ${safeActiveFile.name}
+\`\`\`${safeActiveFile.language}
+${safeActiveFile.content}
 \`\`\`
 
 NOTE: You are seeing a compressed view. Use tools to read other files if needed.
     `.trim();
   } else if (shouldCompress) {
-    // Lazy Load Mode (existing behavior)
+    // Lazy Load Mode
     usedCompression = true;
     fileContext = `
 PROJECT FILE INDEX (Content Hidden to Save Tokens):
-${allFiles.map(f => `- ${f.name} (${f.language})`).join('\n')}
+${safeAllFiles.map(f => `- ${f.name} (${f.language})`).join('\n')}
 
 ACTIVE FILE (Full Content):
-File: ${activeFile.name}
-\`\`\`${activeFile.language}
-${activeFile.content}
+File: ${safeActiveFile.name}
+\`\`\`${safeActiveFile.language}
+${safeActiveFile.content}
 \`\`\`
 
 NOTE: You do not see the full content of other files. 
@@ -560,23 +621,27 @@ Use 'search_files' to find specific code patterns.
     `.trim();
   } else {
     // Full Context Mode
-    fileContext = allFiles.map(f => `File: ${f.name} (${f.language})\n\`\`\`${f.language}\n${f.content}\n\`\`\``).join('\n\n');
+    fileContext = safeAllFiles.map(f => 
+      `File: ${f.name} (${f.language})\n\`\`\`${f.language}\n${f.content}\n\`\`\``
+    ).join('\n\n');
   }
 
   const tagsInMessage: string[] = currentMessage.match(/#[\w-]+/g) || [];
-  const relevantKnowledge = knowledgeBase.filter(entry => 
-    entry.tags.some(tag => tagsInMessage.includes(tag)) || 
-    entry.tags.includes('#global')
+  const relevantKnowledge = safeKnowledgeBase.filter(entry => 
+    entry && entry.tags && (
+      entry.tags.some(tag => tagsInMessage.includes(tag)) || 
+      entry.tags.includes('#global')
+    )
   );
 
   const knowledgeContext = relevantKnowledge.length > 0 
-    ? `\n\nRELEVANT KNOWLEDGE:\n${relevantKnowledge.map(k => `- [${k.tags.join(', ')}]: ${k.content}`).join('\n')}`
+    ? `\n\nRELEVANT KNOWLEDGE:\n${relevantKnowledge.map(k => `- [${k.tags?.join(', ') || 'no-tags'}]: ${k.content}`).join('\n')}`
     : "";
 
-  const plannerRole = roles.find(r => r.id === llmConfig.plannerRoleId) || roles[0];
-  const coderRole = roles.find(r => r.id === llmConfig.coderRoleId) || roles[1];
-  const todoContext = currentTodos.length > 0 
-    ? `\nTO-DO LIST:\n${currentTodos.map(t => `- [${t.status}] ${t.task} (Phase: ${t.phase})`).join('\n')}`
+  const plannerRole = safeRoles.find(r => r.id === llmConfig.plannerRoleId) || safeRoles[0];
+  const coderRole = safeRoles.find(r => r.id === llmConfig.coderRoleId) || safeRoles[1];
+  const todoContext = safeCurrentTodos.length > 0 
+    ? `\nTO-DO LIST:\n${safeCurrentTodos.map(t => `- [${t.status}] ${t.task} (Phase: ${t.phase})`).join('\n')}`
     : "";
 
   // Handle context transfer if provided
@@ -584,11 +649,11 @@ Use 'search_files' to find specific code patterns.
   if (contextTransfer) {
     contextTransferInfo = `
 CONTEXT TRANSFER:
-- Previous Model: ${contextTransfer.sourceModel}
-- Current Task: ${contextTransfer.currentTask}
-- Completed Steps: ${contextTransfer.completedSteps.join(', ')}
-- Pending Steps: ${contextTransfer.pendingSteps.join(', ')}
-- Previous Context: ${contextTransfer.conversationContext}
+- Previous Model: ${contextTransfer.sourceModel || 'unknown'}
+- Current Task: ${contextTransfer.currentTask || 'none'}
+- Completed Steps: ${(contextTransfer.completedSteps || []).join(', ')}
+- Pending Steps: ${(contextTransfer.pendingSteps || []).join(', ')}
+- Previous Context: ${contextTransfer.conversationContext || 'none'}
     `.trim();
   }
 
@@ -596,47 +661,51 @@ CONTEXT TRANSFER:
   let plan = "";
   if (mode === 'FIX') {
     const plannerPrompt = `
-${plannerRole.systemPrompt}
+${plannerRole?.systemPrompt || 'Analyze the request and provide a plan.'}
 ${knowledgeContext}
 ${todoContext}
 ${contextTransferInfo}
 
 User Request: "${currentMessage}"
-Active File: ${activeFile.name}
-Project Structure: ${allFiles.map(f => f.name).join(', ')}
+Active File: ${safeActiveFile.name}
+Project Structure: ${safeAllFiles.map(f => f.name).join(', ')}
 
 Analyze the request. Provide a concise execution plan.
     `;
 
     try {
       const plannerModel = llmConfig.plannerModelId || llmConfig.activeModelId;
-      if (isGemini) {
-        const res = await callGemini(plannerModel, [{ text: plannerPrompt }], apiKey!, false, false);
-        plan = res.text || "";
+      if (!plannerModel) {
+        plan = "No planner model configured. Proceeding directly.";
+      } else if (isGemini) {
+        const res = await callGemini(plannerModel, [{ text: plannerPrompt }], apiKey, false, false);
+        plan = res.text || "Proceeding directly.";
       } else {
         const localConfig = isLocal ? getLocalProviderConfig('custom', baseUrl) : null;
         const customHeaders = localConfig?.customHeaders || {};
 
         const res = await callOpenAICompatible(
-          baseUrl!, 
-          apiKey!, 
+          baseUrl, 
+          apiKey, 
           plannerModel, 
           [{role: 'user', content: plannerPrompt}], 
           false,
           customHeaders
         );
-        plan = res.choices[0]?.message?.content || "";
+        plan = res.choices[0]?.message?.content || "Proceeding directly.";
       }
-    } catch (e) {
+    } catch (e: any) {
       console.warn('Planner failed, proceeding directly:', e);
-      plan = "Proceeding directly.";
+      plan = `Planner failed: ${e.message}. Proceeding directly.`;
     }
   }
 
   // --- STEP 2: EXECUTOR ---
-  let activeAgentModel = llmConfig.chatModelId;
-  if (mode === 'FIX') activeAgentModel = llmConfig.coderModelId;
-  if (!activeAgentModel) activeAgentModel = llmConfig.activeModelId;
+  let activeAgentModel = llmConfig.chatModelId || llmConfig.coderModelId || llmConfig.activeModelId;
+  
+  if (!activeAgentModel) {
+    return { response: "", error: "No active model configured. Please select a model in settings." };
+  }
 
   let systemInstruction = "";
 
@@ -648,10 +717,10 @@ ${contextTransferInfo}
     `;
   } else {
     systemInstruction = `
-${coderRole.systemPrompt}
+${coderRole?.systemPrompt || 'You are a helpful AI assistant.'}
 Task: ${mode === 'FIX' ? 'Execute the plan.' : 'Explain/Answer.'}
 
-${mode === 'FIX' ? `PLAN:\n${plan}` : ''}
+${mode === 'FIX' && plan ? `PLAN:\n${plan}` : ''}
 
 ${fileContext}
 ${todoContext}
@@ -674,7 +743,9 @@ ${usedCompression ? 'REMINDER: You are in Compressed Context mode. Use search_fi
 
     if (attachments && attachments.length > 0 && isGemini) {
       attachments.forEach(att => {
-        contentParts.push({ inlineData: { mimeType: att.mimeType, data: att.content } });
+        if (att && att.mimeType && att.content) {
+          contentParts.push({ inlineData: { mimeType: att.mimeType, data: att.content } });
+        }
       });
     }
 
@@ -685,11 +756,13 @@ ${usedCompression ? 'REMINDER: You are in Compressed Context mode. Use search_fi
     ];
 
     // Add recent history (last 4 messages to save tokens)
-    history.slice(-4).forEach(h => {
-      openAIMessages.push({ 
-        role: h.role === 'model' ? 'assistant' : 'user', 
-        content: h.content 
-      });
+    safeHistory.slice(-4).forEach(h => {
+      if (h && h.role && h.content) {
+        openAIMessages.push({ 
+          role: h.role === 'model' ? 'assistant' : 'user', 
+          content: h.content 
+        });
+      }
     });
 
     if (!isGemini) {
@@ -698,58 +771,63 @@ ${usedCompression ? 'REMINDER: You are in Compressed Context mode. Use search_fi
 
     const processToolCalls = (rawCalls: any[]) => {
       rawCalls.forEach((fc: any) => {
-        const args = typeof fc.args === 'string' ? JSON.parse(fc.args) : fc.args;
-        const toolCall: ToolCall = {
-          id: 'call_' + Math.random().toString(36).substr(2, 9),
-          name: fc.name,
-          args: args
-        };
-        toolCalls.push(toolCall);
+        try {
+          const args = typeof fc.args === 'string' ? JSON.parse(fc.args) : (fc.args || {});
+          const toolCall: ToolCall = {
+            id: 'call_' + Math.random().toString(36).substr(2, 9),
+            name: fc.name,
+            args: args
+          };
+          toolCalls.push(toolCall);
 
-        // Handle Tool Logic Internally where possible
-        if (toolCall.name === 'update_file') {
-          const existingFile = allFiles.find(f => f.name === toolCall.args.name);
-          if (existingFile) {
+          // Handle Tool Logic Internally where possible
+          if (toolCall.name === 'update_file') {
+            const existingFile = safeAllFiles.find(f => f.name === toolCall.args.name);
+            if (existingFile) {
+              proposedChanges.push({
+                id: generateUUID(),
+                fileName: toolCall.args.name,
+                originalContent: existingFile.content,
+                newContent: toolCall.args.content,
+                type: 'update'
+              });
+            } else {
+              responseText += `\n\nNote: File "${toolCall.args.name}" not found for update.`;
+            }
+          } else if (toolCall.name === 'create_file') {
             proposedChanges.push({
-              id: crypto.randomUUID(),
+              id: generateUUID(),
               fileName: toolCall.args.name,
-              originalContent: existingFile.content,
+              originalContent: '',
               newContent: toolCall.args.content,
-              type: 'update'
+              type: 'create'
             });
-          } else {
-            responseText += `\n\nNote: File "${toolCall.args.name}" not found for update.`;
+          } else if (toolCall.name === 'search_files') {
+            const results = performSearch(toolCall.args.query, safeAllFiles);
+            if (results.length > 0) {
+              responseText += `\n\nSearch Results for '${toolCall.args.query}':\n` + 
+                results.slice(0, 8).map(r => `- ${r.fileName}:${r.line} | ${r.content}`).join('\n');
+            } else {
+              responseText += `\n\nNo results found for '${toolCall.args.query}'`;
+            }
+          } else if (toolCall.name === 'read_file') {
+            const f = safeAllFiles.find(file => file.name === toolCall.args.fileName);
+            if (f) {
+              responseText += `\n\nContent of ${f.name}:\n\`\`\`${f.language}\n${f.content}\n\`\`\``;
+            } else {
+              responseText += `\n\nFile "${toolCall.args.fileName}" not found.`;
+            }
           }
-        } else if (toolCall.name === 'create_file') {
-          proposedChanges.push({
-            id: crypto.randomUUID(),
-            fileName: toolCall.args.name,
-            originalContent: '',
-            newContent: toolCall.args.content,
-            type: 'create'
-          });
-        } else if (toolCall.name === 'search_files') {
-          const results = performSearch(toolCall.args.query, allFiles);
-          if (results.length > 0) {
-            responseText += `\n\nSearch Results for '${toolCall.args.query}':\n` + 
-              results.slice(0, 8).map(r => `- ${r.fileName}:${r.line} | ${r.content}`).join('\n');
-          } else {
-            responseText += `\n\nNo results found for '${toolCall.args.query}'`;
-          }
-        } else if (toolCall.name === 'read_file') {
-          const f = allFiles.find(file => file.name === toolCall.args.fileName);
-          if (f) {
-            responseText += `\n\nContent of ${f.name}:\n\`\`\`${f.language}\n${f.content}\n\`\`\``;
-          } else {
-            responseText += `\n\nFile "${toolCall.args.fileName}" not found.`;
-          }
+        } catch (error) {
+          console.error('Error processing tool call:', error);
+          responseText += `\n\nError processing tool call: ${error}`;
         }
       });
     };
 
     if (isGemini) {
       const fullParts = [{ text: systemInstruction }, ...contentParts];
-      const res = await callGemini(activeAgentModel, fullParts, apiKey!, true, useInternet);
+      const res = await callGemini(activeAgentModel, fullParts, apiKey, true, useInternet);
 
       if (res.functionCalls && res.functionCalls.length > 0) {
         processToolCalls(res.functionCalls);
@@ -760,38 +838,43 @@ ${usedCompression ? 'REMINDER: You are in Compressed Context mode. Use search_fi
       const customHeaders = localConfig?.customHeaders || {};
 
       const res = await callOpenAICompatible(
-        baseUrl!, 
-        apiKey!, 
+        baseUrl, 
+        apiKey, 
         activeAgentModel, 
         openAIMessages, 
         true,
         customHeaders
       );
 
-      const choice = res.choices[0];
+      const choice = res.choices?.[0];
+      if (!choice) {
+        throw new Error('No response from AI service');
+      }
+
       responseText = (choice.message?.content || "") + responseText;
 
       if (choice.message?.tool_calls) {
         const calls = choice.message.tool_calls.map((tc: any) => ({
-          name: tc.function.name,
-          args: JSON.parse(tc.function.arguments)
-        }));
+          name: tc.function?.name,
+          args: tc.function?.arguments ? JSON.parse(tc.function.arguments) : {}
+        })).filter((tc: any) => tc.name); // Filter out invalid tool calls
+        
         processToolCalls(calls);
       }
     }
 
     return {
-      response: responseText.trim(),
+      response: responseText.trim() || "No response generated.",
       toolCalls: toolCalls.length > 0 ? toolCalls : undefined,
       proposedChanges: proposedChanges.length > 0 ? proposedChanges : undefined,
       contextSummarized: usedCompression
     };
 
   } catch (error: any) {
-    console.error('LLM Error:', error);
+    console.error('LLM Service Error:', error);
     return { 
       response: "", 
-      error: `AI Service Error: ${error.message}. Please check your API key and try again.` 
+      error: `AI Service Error: ${error.message}. Please check your configuration and try again.` 
     };
   }
 };
@@ -807,6 +890,29 @@ export const streamFixCodeWithGemini = async (
     roles, knowledgeBase, useInternet, currentTodos, projectSummary, useCompression, contextTransfer 
   } = request;
 
+  // Validate critical inputs
+  if (!llmConfig) {
+    callbacks.onError("Missing LLM configuration");
+    return;
+  }
+
+  if (!currentMessage?.trim()) {
+    callbacks.onError("Empty message");
+    return;
+  }
+
+  const safeAllFiles = allFiles || [];
+  const safeActiveFile = activeFile || safeAllFiles[0];
+  const safeHistory = history || [];
+  const safeRoles = roles || [];
+  const safeKnowledgeBase = knowledgeBase || [];
+  const safeCurrentTodos = currentTodos || [];
+
+  if (!safeActiveFile) {
+    callbacks.onError("No active file available");
+    return;
+  }
+
   const isGemini = llmConfig.provider === 'gemini';
   const isLocal = llmConfig.provider === 'local';
 
@@ -816,8 +922,8 @@ export const streamFixCodeWithGemini = async (
     return;
   }
 
-  let apiKey = llmConfig.apiKey;
-  let baseUrl = llmConfig.baseUrl;
+  let apiKey = llmConfig.apiKey || '';
+  let baseUrl = llmConfig.baseUrl || '';
 
   // Handle local provider configuration
   if (isLocal) {
@@ -842,7 +948,7 @@ export const streamFixCodeWithGemini = async (
 
   try {
     // Calculate Context Size and apply compression if needed
-    const totalChars = allFiles.reduce((acc, f) => acc + f.content.length, 0);
+    const totalChars = safeAllFiles.reduce((acc, f) => acc + (f.content?.length || 0), 0);
     const shouldCompress = useCompression || (totalChars > LAZY_LOAD_THRESHOLD && !request.useHighCapacity);
 
     let fileContext = "";
@@ -851,7 +957,7 @@ export const streamFixCodeWithGemini = async (
     if (shouldCompress && projectSummary) {
       // Use compressed context
       usedCompression = true;
-      
+
       const compressionConfig = llmConfig.compression || {
         enabled: true,
         maxFiles: 15,
@@ -859,25 +965,25 @@ export const streamFixCodeWithGemini = async (
         autoSummarize: true,
         preserveStructure: true
       };
-      
+
       const relevantFiles = contextService.filterRelevantFiles(
-        allFiles, 
+        safeAllFiles, 
         currentMessage, 
-        activeFile, 
+        safeActiveFile, 
         compressionConfig
       );
 
       fileContext = `
 COMPRESSED PROJECT CONTEXT:
-${projectSummary.summary}
+${projectSummary.summary || 'No summary available'}
 
-KEY FILES (${relevantFiles.length} of ${allFiles.length} files shown):
+KEY FILES (${relevantFiles.length} of ${safeAllFiles.length} files shown):
 ${relevantFiles.map(f => `- ${f.name} (${f.language})`).join('\n')}
 
 ACTIVE FILE (Full Content):
-File: ${activeFile.name}
-\`\`\`${activeFile.language}
-${activeFile.content}
+File: ${safeActiveFile.name}
+\`\`\`${safeActiveFile.language}
+${safeActiveFile.content}
 \`\`\`
 
 NOTE: You are seeing a compressed view. Use tools to read other files if needed.
@@ -887,12 +993,12 @@ NOTE: You are seeing a compressed view. Use tools to read other files if needed.
       usedCompression = true;
       fileContext = `
 PROJECT FILE INDEX (Content Hidden to Save Tokens):
-${allFiles.map(f => `- ${f.name} (${f.language})`).join('\n')}
+${safeAllFiles.map(f => `- ${f.name} (${f.language})`).join('\n')}
 
 ACTIVE FILE (Full Content):
-File: ${activeFile.name}
-\`\`\`${activeFile.language}
-${activeFile.content}
+File: ${safeActiveFile.name}
+\`\`\`${safeActiveFile.language}
+${safeActiveFile.content}
 \`\`\`
 
 NOTE: You do not see the full content of other files. 
@@ -901,23 +1007,27 @@ Use 'search_files' to find specific code patterns.
       `;
     } else {
       // Full Context Mode
-      fileContext = allFiles.map(f => `File: ${f.name} (${f.language})\n\`\`\`${f.language}\n${f.content}\n\`\`\``).join('\n\n');
+      fileContext = safeAllFiles.map(f => 
+        `File: ${f.name} (${f.language})\n\`\`\`${f.language}\n${f.content}\n\`\`\``
+      ).join('\n\n');
     }
 
     const tagsInMessage: string[] = currentMessage.match(/#[\w-]+/g) || [];
-    const relevantKnowledge = knowledgeBase.filter(entry => 
-      entry.tags.some(tag => tagsInMessage.includes(tag)) || 
-      entry.tags.includes('#global')
+    const relevantKnowledge = safeKnowledgeBase.filter(entry => 
+      entry && entry.tags && (
+        entry.tags.some(tag => tagsInMessage.includes(tag)) || 
+        entry.tags.includes('#global')
+      )
     );
 
     const knowledgeContext = relevantKnowledge.length > 0 
-      ? `\n\nRELEVANT KNOWLEDGE:\n${relevantKnowledge.map(k => `- [${k.tags.join(', ')}]: ${k.content}`).join('\n')}`
+      ? `\n\nRELEVANT KNOWLEDGE:\n${relevantKnowledge.map(k => `- [${k.tags?.join(', ') || 'no-tags'}]: ${k.content}`).join('\n')}`
       : "";
 
-    const plannerRole = roles.find(r => r.id === llmConfig.plannerRoleId) || roles[0];
-    const coderRole = roles.find(r => r.id === llmConfig.coderRoleId) || roles[1];
-    const todoContext = currentTodos.length > 0 
-      ? `\nTO-DO LIST:\n${currentTodos.map(t => `- [${t.status}] ${t.task} (Phase: ${t.phase})`).join('\n')}`
+    const plannerRole = safeRoles.find(r => r.id === llmConfig.plannerRoleId) || safeRoles[0];
+    const coderRole = safeRoles.find(r => r.id === llmConfig.coderRoleId) || safeRoles[1];
+    const todoContext = safeCurrentTodos.length > 0 
+      ? `\nTO-DO LIST:\n${safeCurrentTodos.map(t => `- [${t.status}] ${t.task} (Phase: ${t.phase})`).join('\n')}`
       : "";
 
     // Handle context transfer if provided
@@ -925,11 +1035,11 @@ Use 'search_files' to find specific code patterns.
     if (contextTransfer) {
       contextTransferInfo = `
 CONTEXT TRANSFER:
-- Previous Model: ${contextTransfer.sourceModel}
-- Current Task: ${contextTransfer.currentTask}
-- Completed Steps: ${contextTransfer.completedSteps.join(', ')}
-- Pending Steps: ${contextTransfer.pendingSteps.join(', ')}
-- Previous Context: ${contextTransfer.conversationContext}
+- Previous Model: ${contextTransfer.sourceModel || 'unknown'}
+- Current Task: ${contextTransfer.currentTask || 'none'}
+- Completed Steps: ${(contextTransfer.completedSteps || []).join(', ')}
+- Pending Steps: ${(contextTransfer.pendingSteps || []).join(', ')}
+- Previous Context: ${contextTransfer.conversationContext || 'none'}
       `.trim();
     }
 
@@ -937,33 +1047,35 @@ CONTEXT TRANSFER:
     let plan = "";
     if (mode === 'FIX') {
       const plannerPrompt = `
-${plannerRole.systemPrompt}
+${plannerRole?.systemPrompt || 'Analyze the request and provide a plan.'}
 ${knowledgeContext}
 ${todoContext}
 ${contextTransferInfo}
 
 User Request: "${currentMessage}"
-Active File: ${activeFile.name}
-Project Structure: ${allFiles.map(f => f.name).join(', ')}
+Active File: ${safeActiveFile.name}
+Project Structure: ${safeAllFiles.map(f => f.name).join(', ')}
 
 Analyze the request. Provide a concise execution plan.
       `;
 
       try {
         const plannerModel = llmConfig.plannerModelId || llmConfig.activeModelId;
-        const localConfig = isLocal ? getLocalProviderConfig('custom', baseUrl) : null;
-        const customHeaders = localConfig?.customHeaders || {};
+        if (plannerModel) {
+          const localConfig = isLocal ? getLocalProviderConfig('custom', baseUrl) : null;
+          const customHeaders = localConfig?.customHeaders || {};
 
-        const res = await callOpenAICompatible(
-          baseUrl!, 
-          apiKey!, 
-          plannerModel, 
-          [{role: 'user', content: plannerPrompt}], 
-          false,
-          customHeaders,
-          signal
-        );
-        plan = res.choices[0]?.message?.content || "";
+          const res = await callOpenAICompatible(
+            baseUrl, 
+            apiKey, 
+            plannerModel, 
+            [{role: 'user', content: plannerPrompt}], 
+            false,
+            customHeaders,
+            signal
+          );
+          plan = res.choices[0]?.message?.content || "";
+        }
       } catch (e) {
         console.warn('Planner failed, proceeding directly:', e);
         plan = "Proceeding directly.";
@@ -971,9 +1083,12 @@ Analyze the request. Provide a concise execution plan.
     }
 
     // --- STEP 2: EXECUTOR ---
-    let activeAgentModel = llmConfig.chatModelId;
-    if (mode === 'FIX') activeAgentModel = llmConfig.coderModelId;
-    if (!activeAgentModel) activeAgentModel = llmConfig.activeModelId;
+    let activeAgentModel = llmConfig.chatModelId || llmConfig.coderModelId || llmConfig.activeModelId;
+    
+    if (!activeAgentModel) {
+      callbacks.onError("No active model configured. Please select a model in settings.");
+      return;
+    }
 
     let systemInstruction = "";
 
@@ -985,10 +1100,10 @@ ${contextTransferInfo}
       `;
     } else {
       systemInstruction = `
-${coderRole.systemPrompt}
+${coderRole?.systemPrompt || 'You are a helpful AI assistant.'}
 Task: ${mode === 'FIX' ? 'Execute the plan.' : 'Explain/Answer.'}
 
-${mode === 'FIX' ? `PLAN:\n${plan}` : ''}
+${mode === 'FIX' && plan ? `PLAN:\n${plan}` : ''}
 
 ${fileContext}
 ${todoContext}
@@ -1007,11 +1122,13 @@ ${usedCompression ? 'REMINDER: You are in Compressed Context mode. Use search_fi
     ];
 
     // Add recent history (last 4 messages to save tokens)
-    history.slice(-4).forEach(h => {
-      openAIMessages.push({ 
-        role: h.role === 'model' ? 'assistant' : 'user', 
-        content: h.content 
-      });
+    safeHistory.slice(-4).forEach(h => {
+      if (h && h.role && h.content) {
+        openAIMessages.push({ 
+          role: h.role === 'model' ? 'assistant' : 'user', 
+          content: h.content 
+        });
+      }
     });
 
     openAIMessages.push({ role: 'user', content: currentMessage });
@@ -1020,8 +1137,8 @@ ${usedCompression ? 'REMINDER: You are in Compressed Context mode. Use search_fi
     const customHeaders = localConfig?.customHeaders || {};
 
     const fullContent = await callOpenAICompatibleStream(
-      baseUrl!, 
-      apiKey!, 
+      baseUrl, 
+      apiKey, 
       activeAgentModel, 
       openAIMessages, 
       true,
@@ -1038,6 +1155,6 @@ ${usedCompression ? 'REMINDER: You are in Compressed Context mode. Use search_fi
       return; // Silent abort
     }
     console.error('Streaming LLM Error:', error);
-    callbacks.onError(`AI Service Error: ${error.message}. Please check your API key and try again.`);
+    callbacks.onError(`AI Service Error: ${error.message}. Please check your configuration and try again.`);
   }
 };
