@@ -1,6 +1,6 @@
 import * as React from 'react';
 import { useState, useEffect, useRef } from 'react';
-import { Sparkles, Play, Wrench, X, Settings, MessageSquare, Plus, Trash2, Send, Sidebar as SidebarIcon, LayoutTemplate, FileCode, FolderOpen, FilePlus, Code2, ArrowLeft, Eye, Image as ImageIcon, Mic, StopCircle, BookOpen, Book, Globe, Brain, Check, ListTodo, GitCompare, Github, Download } from 'lucide-react';
+import { Sparkles, Play, Wrench, X, Settings, MessageSquare, Plus, Trash2, Send, Sidebar as SidebarIcon, LayoutTemplate, FileCode, FolderOpen, FilePlus, Code2, ArrowLeft, Eye, Image as ImageIcon, Mic, StopCircle, BookOpen, Book, Globe, Brain, Check, ListTodo, GitCompare, Github, Download, Zap } from 'lucide-react';
 import Header from './components/Header';
 import MarkdownRenderer from './components/MarkdownRenderer';
 import CodeEditor from './components/CodeEditor';
@@ -10,9 +10,11 @@ import KnowledgeBase from './components/KnowledgeBase';
 import TodoList from './components/TodoList';
 import DiffViewer from './components/DiffViewer';
 import { THEMES, DEFAULT_LLM_CONFIG, DEFAULT_ROLES } from './constants';
-import { CodeLanguage, AppMode, ThemeType, Session, ChatMessage, ViewMode, ProjectFile, LLMConfig, Project, Attachment, AgentRole, KnowledgeEntry, TodoItem, FileDiff } from './types';
+import { CodeLanguage, AppMode, ThemeType, Session, ChatMessage, ViewMode, ProjectFile, LLMConfig, Project, Attachment, AgentRole, KnowledgeEntry, TodoItem, FileDiff, ProjectSummary, ContextTransfer } from './types';
 import { fixCodeWithGemini, streamFixCodeWithGemini } from './services/llmService';
 import { fetchRepoContents, parseGitHubUrl } from './services/githubService';
+import { contextService } from './services/contextService';
+import { modelSwitchService } from './services/modelSwitchService';
 
 // --- FACTORY FUNCTIONS ---
 
@@ -50,7 +52,7 @@ const StreamingMessage: React.FC<{ content: string; theme: any }> = ({ content, 
   useEffect(() => {
     setDisplayedContent('');
     let index = 0;
-    
+
     const timer = setInterval(() => {
       if (index < content.length) {
         setDisplayedContent(prev => prev + content[index]);
@@ -125,6 +127,20 @@ const App: React.FC = () => {
     localStorage.getItem('cm_use_streaming') !== 'false' // Default to true
   );
 
+  // Context Compression & Model Switching
+  const [projectSummaries, setProjectSummaries] = useState<Record<string, ProjectSummary>>(() => {
+    const saved = localStorage.getItem('cm_project_summaries');
+    return saved ? JSON.parse(saved) : {};
+  });
+
+  const [useCompression, setUseCompression] = useState<boolean>(() => 
+    localStorage.getItem('cm_use_compression') !== 'false'
+  );
+
+  const [showModelSwitch, setShowModelSwitch] = useState<boolean>(false);
+  const [suggestedModels, setSuggestedModels] = useState<LLMConfig[]>([]);
+  const [switchReason, setSwitchReason] = useState<string>('');
+
   // Derived State
   const activeProject = projects.find(p => p.id === currentProjectId) || projects[0];
   const activeFile = activeProject.files.find(f => f.id === activeProject.activeFileId) || activeProject.files[0];
@@ -161,6 +177,8 @@ const App: React.FC = () => {
   useEffect(() => { localStorage.setItem('cm_sessions_v2', JSON.stringify(sessions)); }, [sessions]);
   useEffect(() => { localStorage.setItem('cm_knowledge', JSON.stringify(knowledgeBase)); }, [knowledgeBase]);
   useEffect(() => { localStorage.setItem('cm_use_streaming', String(useStreaming)); }, [useStreaming]);
+  useEffect(() => { localStorage.setItem('cm_project_summaries', JSON.stringify(projectSummaries)); }, [projectSummaries]);
+  useEffect(() => { localStorage.setItem('cm_use_compression', String(useCompression)); }, [useCompression]);
 
   // Ensure a session exists
   useEffect(() => {
@@ -173,6 +191,25 @@ const App: React.FC = () => {
          if (projSess) setCurrentSessionId(projSess.id);
      }
   }, [currentProjectId]);
+
+  // Auto-generate project summaries when files change
+  useEffect(() => {
+    const generateProjectSummary = async () => {
+      if (activeProject.files.length > 0 && !projectSummaries[activeProject.id]) {
+        try {
+          const summary = await contextService.generateProjectSummary(activeProject);
+          setProjectSummaries(prev => ({
+            ...prev,
+            [activeProject.id]: summary
+          }));
+        } catch (error) {
+          console.warn('Failed to generate project summary:', error);
+        }
+      }
+    };
+
+    generateProjectSummary();
+  }, [activeProject.files, activeProject.id]);
 
   useEffect(() => {
     if (chatContainerRef.current) {
@@ -189,6 +226,32 @@ const App: React.FC = () => {
       setIsSidebarOpen(true);
     }
   }, [viewMode]);
+
+  // Auto-detect when model switch might be needed
+  useEffect(() => {
+    if (error) {
+      const shouldSwitch = modelSwitchService.shouldSwitchModel(
+        llmConfig,
+        error,
+        { requests: activeSession.messages.length, errors: 1 }, // Basic stats
+        'medium' // You can determine this based on task
+      );
+      
+      if (shouldSwitch) {
+        const alternatives = modelSwitchService.suggestAlternativeModels(
+          llmConfig,
+          [/* Your available configs here */],
+          'error'
+        );
+        
+        if (alternatives.length > 0) {
+          setSuggestedModels(alternatives);
+          setSwitchReason('Model encountered an error. Try switching to:');
+          setShowModelSwitch(true);
+        }
+      }
+    }
+  }, [error]);
 
   // --- LOGIC ---
 
@@ -241,6 +304,41 @@ const App: React.FC = () => {
 
   const handleRejectDiff = (id: string) => {
       setPendingDiffs(prev => prev.filter(d => d.id !== id));
+  };
+
+  // --- MODEL SWITCHING ---
+
+  const handleModelSwitch = async (newConfig: LLMConfig) => {
+    try {
+      // Prepare context transfer
+      const transfer = await modelSwitchService.prepareContextTransfer(
+        llmConfig,
+        newConfig,
+        activeProject,
+        activeProject.files,
+        activeSession.messages,
+        inputInstruction || activeSession.messages[activeSession.messages.length - 1]?.content || 'Continue task',
+        [], // completedSteps - you can track these
+        []  // pendingSteps - you can track these
+      );
+
+      // Update LLM config
+      setLlmConfig(newConfig);
+      
+      // Show success message
+      const switchMsg: ChatMessage = {
+        id: crypto.randomUUID(),
+        role: 'model',
+        content: `🔄 Switched from ${transfer.sourceModel} to ${transfer.targetModel}. Context transferred successfully. Continuing task...`,
+        timestamp: Date.now()
+      };
+      
+      updateSession({ messages: [...activeSession.messages, switchMsg] });
+      setShowModelSwitch(false);
+      
+    } catch (error: any) {
+      setError(`Failed to switch models: ${error.message}`);
+    }
   };
 
   // --- ACTIONS ---
@@ -405,7 +503,9 @@ const App: React.FC = () => {
         roles: roles,
         knowledgeBase: knowledgeBase,
         useInternet: useInternet,
-        currentTodos: todoList
+        currentTodos: todoList,
+        projectSummary: projectSummaries[activeProject.id],
+        useCompression: useCompression
       });
 
       if (response.error) {
@@ -439,7 +539,9 @@ const App: React.FC = () => {
         roles: roles,
         knowledgeBase: knowledgeBase,
         useInternet: useInternet,
-        currentTodos: todoList
+        currentTodos: todoList,
+        projectSummary: projectSummaries[activeProject.id],
+        useCompression: useCompression
       }, {
         onContent: (content) => {
           setStreamingContent(prev => prev + content);
@@ -502,7 +604,7 @@ const App: React.FC = () => {
         }
       }
     });
-    
+
     if (newKnowledge.length > knowledgeBase.length) setKnowledgeBase(newKnowledge);
     if (JSON.stringify(newTodos) !== JSON.stringify(todoList)) {
       setTodoList(newTodos);
@@ -788,6 +890,13 @@ const App: React.FC = () => {
                         <button onClick={() => updateSession({ mode: 'EXPLAIN' })} className={`px-3 py-1.5 rounded-full text-xs font-medium border transition-all flex items-center gap-1.5 ${activeSession.mode === 'EXPLAIN' ? `${theme.button} border-transparent text-white` : `border-${theme.border} ${theme.textMuted}`}`}><BookOpen className="w-3 h-3"/> Explain</button>
                         <button onClick={() => updateSession({ mode: 'NORMAL' })} className={`px-3 py-1.5 rounded-full text-xs font-medium border transition-all flex items-center gap-1.5 ${activeSession.mode === 'NORMAL' ? `${theme.button} border-transparent text-white` : `border-${theme.border} ${theme.textMuted}`}`}><Brain className="w-3 h-3"/> Normal</button>
                         <button onClick={() => setUseInternet(!useInternet)} className={`px-3 py-1.5 rounded-full text-xs font-medium border transition-all flex items-center gap-1.5 ${useInternet ? `bg-blue-600 border-transparent text-white` : `border-${theme.border} ${theme.textMuted}`}`}><Globe className="w-3 h-3"/> Internet</button>
+                        <button 
+                          onClick={() => setUseCompression(!useCompression)}
+                          className={`px-3 py-1.5 rounded-full text-xs font-medium border transition-all flex items-center gap-1.5 ${useCompression ? 'bg-purple-600 border-transparent text-white' : `border-${theme.border} ${theme.textMuted}`}`}
+                          title="Context Compression"
+                        >
+                          <Zap className="w-3 h-3" /> Compress
+                        </button>
                         {isLoading && (
                             <button onClick={stopStreaming} className={`px-3 py-1.5 rounded-full text-xs font-medium border transition-all flex items-center gap-1.5 bg-red-600 border-transparent text-white`}>
                                 <StopCircle className="w-3 h-3"/> Stop
@@ -840,6 +949,40 @@ const App: React.FC = () => {
           setUseStreaming={setUseStreaming}
           onClose={() => setShowSettings(false)} 
         />
+      )}
+
+      {/* Model Switch Modal */}
+      {showModelSwitch && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm animate-in fade-in duration-200">
+          <div className={`${theme.bgPanel} border ${theme.border} rounded-2xl w-full max-w-md shadow-2xl p-6`}>
+            <h3 className={`text-lg font-bold ${theme.textMain} mb-2`}>Switch Model</h3>
+            <p className={`text-sm ${theme.textMuted} mb-4`}>{switchReason}</p>
+            
+            <div className="space-y-2 mb-4">
+              {suggestedModels.map((config, index) => (
+                <button
+                  key={index}
+                  onClick={() => handleModelSwitch(config)}
+                  className={`w-full text-left p-3 rounded-lg border transition-all ${theme.bgApp} border-${theme.border} hover:bg-white/5`}
+                >
+                  <div className="font-medium">{config.provider}</div>
+                  <div className="text-xs opacity-70">
+                    {config.activeModelId} → {config.plannerModelId} → {config.coderModelId}
+                  </div>
+                </button>
+              ))}
+            </div>
+            
+            <div className="flex gap-2">
+              <button
+                onClick={() => setShowModelSwitch(false)}
+                className={`flex-1 px-4 py-2 rounded-lg border ${theme.border} ${theme.textMuted} hover:text-white`}
+              >
+                Cancel
+              </button>
+            </div>
+          </div>
+        </div>
       )}
     </div>
   );
