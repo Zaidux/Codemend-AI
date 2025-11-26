@@ -1,6 +1,10 @@
 import { GoogleGenAI, Type } from "@google/genai";
 import { FixRequest, FixResponse, ToolCall, LLMConfig, Attachment, KnowledgeEntry, FileDiff, TodoItem, ProjectFile, SearchResult } from '../types';
 
+// Import the new services
+import { contextService } from './contextService';
+import { modelSwitchService } from './modelSwitchService';
+
 // --- TOOL DEFINITIONS ---
 
 // Gemini-compatible tool definitions
@@ -458,7 +462,10 @@ interface StreamingCallbacks {
 
 // --- ORCHESTRATOR ---
 export const fixCodeWithGemini = async (request: FixRequest): Promise<FixResponse> => {
-  const { llmConfig, history, currentMessage, allFiles, activeFile, mode, attachments, roles, knowledgeBase, useInternet, currentTodos } = request;
+  const { 
+    llmConfig, history, currentMessage, allFiles, activeFile, mode, attachments, 
+    roles, knowledgeBase, useInternet, currentTodos, projectSummary, useCompression, contextTransfer 
+  } = request;
 
   const isGemini = llmConfig.provider === 'gemini';
   const isLocal = llmConfig.provider === 'local';
@@ -492,14 +499,51 @@ export const fixCodeWithGemini = async (request: FixRequest): Promise<FixRespons
     }
   }
 
-  // Calculate Context Size
+  // Calculate Context Size and apply compression if needed
   const totalChars = allFiles.reduce((acc, f) => acc + f.content.length, 0);
-  const useLazyLoading = totalChars > LAZY_LOAD_THRESHOLD && !request.useHighCapacity;
+  const shouldCompress = useCompression || (totalChars > LAZY_LOAD_THRESHOLD && !request.useHighCapacity);
 
-  // Build File Context
   let fileContext = "";
+  let usedCompression = false;
 
-  if (useLazyLoading) {
+  if (shouldCompress && projectSummary) {
+    // Use compressed context
+    usedCompression = true;
+    
+    // Filter relevant files
+    const compressionConfig = llmConfig.compression || {
+      enabled: true,
+      maxFiles: 15,
+      maxFileSize: 50000,
+      autoSummarize: true,
+      preserveStructure: true
+    };
+    
+    const relevantFiles = contextService.filterRelevantFiles(
+      allFiles, 
+      currentMessage, 
+      activeFile, 
+      compressionConfig
+    );
+
+    fileContext = `
+COMPRESSED PROJECT CONTEXT:
+${projectSummary.summary}
+
+KEY FILES (${relevantFiles.length} of ${allFiles.length} files shown):
+${relevantFiles.map(f => `- ${f.name} (${f.language})`).join('\n')}
+
+ACTIVE FILE (Full Content):
+File: ${activeFile.name}
+\`\`\`${activeFile.language}
+${activeFile.content}
+\`\`\`
+
+NOTE: You are seeing a compressed view. Use tools to read other files if needed.
+    `.trim();
+  } else if (shouldCompress) {
+    // Lazy Load Mode (existing behavior)
+    usedCompression = true;
     fileContext = `
 PROJECT FILE INDEX (Content Hidden to Save Tokens):
 ${allFiles.map(f => `- ${f.name} (${f.language})`).join('\n')}
@@ -513,8 +557,9 @@ ${activeFile.content}
 NOTE: You do not see the full content of other files. 
 Use the 'read_file' tool to get the content of a specific file if needed.
 Use 'search_files' to find specific code patterns.
-    `;
+    `.trim();
   } else {
+    // Full Context Mode
     fileContext = allFiles.map(f => `File: ${f.name} (${f.language})\n\`\`\`${f.language}\n${f.content}\n\`\`\``).join('\n\n');
   }
 
@@ -534,6 +579,19 @@ Use 'search_files' to find specific code patterns.
     ? `\nTO-DO LIST:\n${currentTodos.map(t => `- [${t.status}] ${t.task} (Phase: ${t.phase})`).join('\n')}`
     : "";
 
+  // Handle context transfer if provided
+  let contextTransferInfo = "";
+  if (contextTransfer) {
+    contextTransferInfo = `
+CONTEXT TRANSFER:
+- Previous Model: ${contextTransfer.sourceModel}
+- Current Task: ${contextTransfer.currentTask}
+- Completed Steps: ${contextTransfer.completedSteps.join(', ')}
+- Pending Steps: ${contextTransfer.pendingSteps.join(', ')}
+- Previous Context: ${contextTransfer.conversationContext}
+    `.trim();
+  }
+
   // --- STEP 1: PLANNER ---
   let plan = "";
   if (mode === 'FIX') {
@@ -541,6 +599,7 @@ Use 'search_files' to find specific code patterns.
 ${plannerRole.systemPrompt}
 ${knowledgeContext}
 ${todoContext}
+${contextTransferInfo}
 
 User Request: "${currentMessage}"
 Active File: ${activeFile.name}
@@ -585,6 +644,7 @@ Analyze the request. Provide a concise execution plan.
     systemInstruction = `
 You are a helpful AI assistant. 
 ${knowledgeContext}
+${contextTransferInfo}
     `;
   } else {
     systemInstruction = `
@@ -596,11 +656,12 @@ ${mode === 'FIX' ? `PLAN:\n${plan}` : ''}
 ${fileContext}
 ${todoContext}
 ${knowledgeContext}
+${contextTransferInfo}
 
 USER REQUEST: ${currentMessage}
 
 ${mode === 'FIX' ? 'Use tools to apply changes.' : ''}
-${useLazyLoading ? 'REMINDER: You are in Low-Token mode. Use search_files or read_file to see code not listed above.' : ''}
+${usedCompression ? 'REMINDER: You are in Compressed Context mode. Use search_files or read_file to see code not listed above.' : ''}
     `;
   }
 
@@ -723,7 +784,7 @@ ${useLazyLoading ? 'REMINDER: You are in Low-Token mode. Use search_files or rea
       response: responseText.trim(),
       toolCalls: toolCalls.length > 0 ? toolCalls : undefined,
       proposedChanges: proposedChanges.length > 0 ? proposedChanges : undefined,
-      contextSummarized: useLazyLoading
+      contextSummarized: usedCompression
     };
 
   } catch (error: any) {
@@ -735,13 +796,16 @@ ${useLazyLoading ? 'REMINDER: You are in Low-Token mode. Use search_files or rea
   }
 };
 
-// Streaming version
+// Streaming version (updated with compression support)
 export const streamFixCodeWithGemini = async (
   request: FixRequest,
   callbacks: StreamingCallbacks,
   signal?: AbortSignal
 ): Promise<void> => {
-  const { llmConfig, history, currentMessage, allFiles, activeFile, mode, attachments, roles, knowledgeBase, useInternet, currentTodos } = request;
+  const { 
+    llmConfig, history, currentMessage, allFiles, activeFile, mode, attachments, 
+    roles, knowledgeBase, useInternet, currentTodos, projectSummary, useCompression, contextTransfer 
+  } = request;
 
   const isGemini = llmConfig.provider === 'gemini';
   const isLocal = llmConfig.provider === 'local';
@@ -777,14 +841,50 @@ export const streamFixCodeWithGemini = async (
   }
 
   try {
-    // Calculate Context Size
+    // Calculate Context Size and apply compression if needed
     const totalChars = allFiles.reduce((acc, f) => acc + f.content.length, 0);
-    const useLazyLoading = totalChars > LAZY_LOAD_THRESHOLD && !request.useHighCapacity;
+    const shouldCompress = useCompression || (totalChars > LAZY_LOAD_THRESHOLD && !request.useHighCapacity);
 
-    // Build File Context
     let fileContext = "";
+    let usedCompression = false;
 
-    if (useLazyLoading) {
+    if (shouldCompress && projectSummary) {
+      // Use compressed context
+      usedCompression = true;
+      
+      const compressionConfig = llmConfig.compression || {
+        enabled: true,
+        maxFiles: 15,
+        maxFileSize: 50000,
+        autoSummarize: true,
+        preserveStructure: true
+      };
+      
+      const relevantFiles = contextService.filterRelevantFiles(
+        allFiles, 
+        currentMessage, 
+        activeFile, 
+        compressionConfig
+      );
+
+      fileContext = `
+COMPRESSED PROJECT CONTEXT:
+${projectSummary.summary}
+
+KEY FILES (${relevantFiles.length} of ${allFiles.length} files shown):
+${relevantFiles.map(f => `- ${f.name} (${f.language})`).join('\n')}
+
+ACTIVE FILE (Full Content):
+File: ${activeFile.name}
+\`\`\`${activeFile.language}
+${activeFile.content}
+\`\`\`
+
+NOTE: You are seeing a compressed view. Use tools to read other files if needed.
+      `.trim();
+    } else if (shouldCompress) {
+      // Lazy Load Mode
+      usedCompression = true;
       fileContext = `
 PROJECT FILE INDEX (Content Hidden to Save Tokens):
 ${allFiles.map(f => `- ${f.name} (${f.language})`).join('\n')}
@@ -800,6 +900,7 @@ Use the 'read_file' tool to get the content of a specific file if needed.
 Use 'search_files' to find specific code patterns.
       `;
     } else {
+      // Full Context Mode
       fileContext = allFiles.map(f => `File: ${f.name} (${f.language})\n\`\`\`${f.language}\n${f.content}\n\`\`\``).join('\n\n');
     }
 
@@ -819,6 +920,19 @@ Use 'search_files' to find specific code patterns.
       ? `\nTO-DO LIST:\n${currentTodos.map(t => `- [${t.status}] ${t.task} (Phase: ${t.phase})`).join('\n')}`
       : "";
 
+    // Handle context transfer if provided
+    let contextTransferInfo = "";
+    if (contextTransfer) {
+      contextTransferInfo = `
+CONTEXT TRANSFER:
+- Previous Model: ${contextTransfer.sourceModel}
+- Current Task: ${contextTransfer.currentTask}
+- Completed Steps: ${contextTransfer.completedSteps.join(', ')}
+- Pending Steps: ${contextTransfer.pendingSteps.join(', ')}
+- Previous Context: ${contextTransfer.conversationContext}
+      `.trim();
+    }
+
     // --- STEP 1: PLANNER ---
     let plan = "";
     if (mode === 'FIX') {
@@ -826,6 +940,7 @@ Use 'search_files' to find specific code patterns.
 ${plannerRole.systemPrompt}
 ${knowledgeContext}
 ${todoContext}
+${contextTransferInfo}
 
 User Request: "${currentMessage}"
 Active File: ${activeFile.name}
@@ -866,6 +981,7 @@ Analyze the request. Provide a concise execution plan.
       systemInstruction = `
 You are a helpful AI assistant. 
 ${knowledgeContext}
+${contextTransferInfo}
       `;
     } else {
       systemInstruction = `
@@ -877,11 +993,12 @@ ${mode === 'FIX' ? `PLAN:\n${plan}` : ''}
 ${fileContext}
 ${todoContext}
 ${knowledgeContext}
+${contextTransferInfo}
 
 USER REQUEST: ${currentMessage}
 
 ${mode === 'FIX' ? 'Use tools to apply changes.' : ''}
-${useLazyLoading ? 'REMINDER: You are in Low-Token mode. Use search_files or read_file to see code not listed above.' : ''}
+${usedCompression ? 'REMINDER: You are in Compressed Context mode. Use search_files or read_file to see code not listed above.' : ''}
       `;
     }
 
