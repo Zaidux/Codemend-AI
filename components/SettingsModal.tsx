@@ -1,4 +1,3 @@
-
 import * as React from 'react';
 import { Settings, Zap, X, LayoutTemplate, MessageSquare, Database, Cpu, Key, UserCog, Plus, Trash2, Github } from 'lucide-react';
 import { ThemeConfig, ThemeType, ViewMode, LLMConfig, LLMProvider, AgentRole } from '../types';
@@ -17,6 +16,8 @@ interface SettingsModalProps {
   roles: AgentRole[];
   setRoles: (r: AgentRole[]) => void;
   onClose: () => void;
+  useStreaming: boolean; // Added
+  setUseStreaming: (b: boolean) => void; // Added
 }
 
 const SettingsModal: React.FC<SettingsModalProps> = ({
@@ -25,7 +26,8 @@ const SettingsModal: React.FC<SettingsModalProps> = ({
   highCapacity, setHighCapacity,
   llmConfig, setLlmConfig,
   roles, setRoles,
-  onClose
+  onClose,
+  useStreaming, setUseStreaming // Added
 }) => {
   const [activeTab, setActiveTab] = React.useState<'general' | 'models' | 'roles'>('general');
   const [newRole, setNewRole] = React.useState<Partial<AgentRole>>({ name: '', description: '', systemPrompt: '' });
@@ -34,7 +36,7 @@ const SettingsModal: React.FC<SettingsModalProps> = ({
   const updateLLM = (key: keyof LLMConfig, value: any) => {
     setLlmConfig({ ...llmConfig, [key]: value });
   };
-  
+
   const updateGitHub = (token: string) => {
       setLlmConfig({ ...llmConfig, github: { ...llmConfig.github, personalAccessToken: token } });
   };
@@ -78,7 +80,7 @@ const SettingsModal: React.FC<SettingsModalProps> = ({
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm animate-in fade-in duration-200">
       <div className={`${theme.bgPanel} border ${theme.border} rounded-2xl w-full max-w-2xl shadow-2xl flex flex-col max-h-[90vh]`}>
-        
+
         {/* Header */}
         <div className={`p-6 border-b ${theme.border} flex justify-between items-center`}>
           <h2 className={`text-xl font-bold ${theme.textMain} flex items-center gap-2`}>
@@ -104,7 +106,7 @@ const SettingsModal: React.FC<SettingsModalProps> = ({
 
         {/* Content */}
         <div className="flex-1 overflow-y-auto p-6 space-y-8 custom-scrollbar">
-          
+
           {activeTab === 'general' && (
             <>
               {/* Interface Layout */}
@@ -144,6 +146,20 @@ const SettingsModal: React.FC<SettingsModalProps> = ({
                   </button>
                 </div>
                 <p className={`text-xs ${theme.textMuted}`}>Allows processing of larger files (requires supported model).</p>
+              </div>
+
+              {/* Streaming Responses */}
+              <div>
+                <div className="flex items-center justify-between mb-2">
+                  <label className={`flex items-center gap-2 text-sm font-medium ${theme.textMain}`}>
+                    <MessageSquare className={useStreaming ? "text-green-400 w-4 h-4" : "text-slate-500 w-4 h-4"} /> 
+                    Streaming Responses
+                  </label>
+                  <button onClick={() => setUseStreaming(!useStreaming)} className={`w-12 h-6 rounded-full transition-colors relative ${useStreaming ? 'bg-green-600' : 'bg-slate-700'}`}>
+                    <div className={`w-4 h-4 bg-white rounded-full absolute top-1 transition-transform ${useStreaming ? 'left-7' : 'left-1'}`} />
+                  </button>
+                </div>
+                <p className={`text-xs ${theme.textMuted}`}>Show responses as they're generated (not available for Gemini).</p>
               </div>
             </>
           )}
@@ -196,13 +212,13 @@ const SettingsModal: React.FC<SettingsModalProps> = ({
                  />
                  <p className={`text-xs ${theme.textMuted} mt-1`}>Used to clone repositories and (future) commit changes.</p>
               </div>
-              
+
               {/* Model Assignment */}
               <div className="space-y-4 pt-4 border-t border-white/5">
                  <h3 className={`text-sm font-bold ${theme.textMain} flex items-center gap-2`}>
                    <Cpu className="w-4 h-4" /> Agent Model Assignments
                  </h3>
-                 
+
                  <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                      <ModelSelect label="Planner / Architect Model" valueKey="plannerModelId" />
                      <ModelSelect label="Coder / Developer Model" valueKey="coderModelId" />
@@ -216,7 +232,7 @@ const SettingsModal: React.FC<SettingsModalProps> = ({
                  <h3 className={`text-sm font-bold ${theme.textMain} mb-4 flex items-center gap-2`}>
                    <UserCog className="w-4 h-4" /> Role Definitions
                  </h3>
-                 
+
                  <div className="space-y-4">
                     <div>
                        <label className={`block text-xs ${theme.textMuted} mb-1`}>Planner Persona</label>
@@ -247,7 +263,7 @@ const SettingsModal: React.FC<SettingsModalProps> = ({
               </div>
             </>
           )}
-          
+
           {activeTab === 'roles' && (
               <div className="space-y-4">
                   <div className="flex justify-between items-center">
@@ -256,7 +272,7 @@ const SettingsModal: React.FC<SettingsModalProps> = ({
                         <Plus className="w-4 h-4 inline mr-1" /> New Role
                     </button>
                   </div>
-                  
+
                   {isAddingRole && (
                       <div className={`p-4 border ${theme.border} rounded-lg space-y-3 bg-white/5`}>
                           <input 
