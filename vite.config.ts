@@ -15,7 +15,23 @@ export default defineConfig(({ mode }) => {
         VitePWA({
           registerType: 'autoUpdate',
           workbox: {
-            globPatterns: ['**/*.{js,css,html,ico,png,svg,woff,woff2}']
+            globPatterns: ['**/*.{js,css,html,ico,png,svg,woff,woff2}'],
+            runtimeCaching: [
+              {
+                urlPattern: /^https:\/\/cdn\.tailwindcss\.com\/.*/i,
+                handler: 'CacheFirst',
+                options: {
+                  cacheName: 'tailwind-cdn-cache',
+                  expiration: {
+                    maxEntries: 10,
+                    maxAgeSeconds: 60 * 60 * 24 * 365 // 1 year
+                  },
+                  cacheableResponse: {
+                    statuses: [0, 200]
+                  }
+                }
+              }
+            ]
           },
           manifest: {
             name: 'CodeMend AI',
