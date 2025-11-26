@@ -222,7 +222,8 @@ const callOpenAICompatible = async (
   model: string, 
   messages: any[], 
   tools: boolean = false,
-  customHeaders: Record<string, string> = {}
+  customHeaders: Record<string, string> = {},
+  signal?: AbortSignal
 ): Promise<any> => {
   const body: any = {
     model: model,
@@ -254,7 +255,8 @@ const callOpenAICompatible = async (
     const response = await fetch(`${baseUrl}/chat/completions`, {
       method: 'POST',
       headers,
-      body: JSON.stringify(body)
+      body: JSON.stringify(body),
+      signal
     });
 
     if (!response.ok) {
@@ -264,8 +266,113 @@ const callOpenAICompatible = async (
 
     return await response.json();
   } catch (error: any) {
+    if (error.name === 'AbortError') {
+      throw error;
+    }
     console.error('OpenAI API Error:', error);
     throw new Error(`OpenAI API Error: ${error.message}`);
+  }
+};
+
+// Streaming version for OpenAI-compatible APIs
+const callOpenAICompatibleStream = async (
+  baseUrl: string, 
+  apiKey: string, 
+  model: string, 
+  messages: any[], 
+  tools: boolean = false,
+  customHeaders: Record<string, string> = {},
+  onContent: (content: string) => void,
+  onToolCall?: (toolCall: any) => void,
+  signal?: AbortSignal
+): Promise<string> => {
+  const body: any = {
+    model: model,
+    messages: messages,
+    temperature: 0.1,
+    stream: true,
+  };
+
+  if (tools) {
+    body.tools = OPENAI_TOOL_DEFINITIONS;
+    body.tool_choice = 'auto';
+  }
+
+  const headers: HeadersInit = {
+    'Content-Type': 'application/json',
+    ...customHeaders
+  };
+
+  if (apiKey) {
+    headers['Authorization'] = `Bearer ${apiKey}`;
+  }
+
+  if (baseUrl.includes('openrouter.ai')) {
+    headers['HTTP-Referer'] = 'https://codemend.ai';
+    headers['X-Title'] = 'CodeMend AI';
+  }
+
+  try {
+    const response = await fetch(`${baseUrl}/chat/completions`, {
+      method: 'POST',
+      headers,
+      body: JSON.stringify(body),
+      signal
+    });
+
+    if (!response.ok) {
+      const err = await response.text();
+      throw new Error(`API Error ${response.status}: ${err}`);
+    }
+
+    const reader = response.body?.getReader();
+    if (!reader) {
+      throw new Error('No response body');
+    }
+
+    let fullContent = '';
+    const decoder = new TextDecoder();
+
+    try {
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+
+        const chunk = decoder.decode(value, { stream: true });
+        const lines = chunk.split('\n');
+
+        for (const line of lines) {
+          if (line.startsWith('data: ') && !line.includes('data: [DONE]')) {
+            try {
+              const data = JSON.parse(line.slice(6));
+              const content = data.choices[0]?.delta?.content;
+              if (content) {
+                fullContent += content;
+                onContent(content);
+              }
+
+              // Handle tool calls in streaming
+              const toolCalls = data.choices[0]?.delta?.tool_calls;
+              if (toolCalls && onToolCall) {
+                onToolCall(toolCalls);
+              }
+            } catch (e) {
+              // Ignore JSON parse errors for incomplete chunks
+            }
+          }
+        }
+      }
+    } finally {
+      reader.releaseLock();
+    }
+
+    return fullContent;
+  } catch (error: any) {
+    if (error.name === 'AbortError') {
+      throw error;
+    }
+    console.error('OpenAI Stream Error:', error);
+    throw new Error(`OpenAI Stream Error: ${error.message}`);
   }
 };
 
@@ -340,6 +447,15 @@ const performSearch = (query: string, files: ProjectFile[]): SearchResult[] => {
   return results;
 };
 
+// --- STREAMING INTERFACE ---
+interface StreamingCallbacks {
+  onContent: (content: string) => void;
+  onToolCalls?: (toolCalls: ToolCall[]) => void;
+  onProposedChanges?: (changes: FileDiff[]) => void;
+  onComplete: (fullResponse: string) => void;
+  onError: (error: string) => void;
+}
+
 // --- ORCHESTRATOR ---
 export const fixCodeWithGemini = async (request: FixRequest): Promise<FixResponse> => {
   const { llmConfig, history, currentMessage, allFiles, activeFile, mode, attachments, roles, knowledgeBase, useInternet, currentTodos } = request;
@@ -352,7 +468,7 @@ export const fixCodeWithGemini = async (request: FixRequest): Promise<FixRespons
 
   // Handle local provider configuration
   if (isLocal) {
-    const localConfig = getLocalProviderConfig('custom', baseUrl); // Use custom for any local
+    const localConfig = getLocalProviderConfig('custom', baseUrl);
     baseUrl = localConfig.baseUrl || baseUrl;
 
     if (localConfig.requiresAuth && !apiKey) {
@@ -436,7 +552,7 @@ Analyze the request. Provide a concise execution plan.
     try {
       const plannerModel = llmConfig.plannerModelId || llmConfig.activeModelId;
       if (isGemini) {
-        const res = await callGemini(plannerModel, [{ text: plannerPrompt }], apiKey!, false, false); // No tools for planner
+        const res = await callGemini(plannerModel, [{ text: plannerPrompt }], apiKey!, false, false);
         plan = res.text || "";
       } else {
         const localConfig = isLocal ? getLocalProviderConfig('custom', baseUrl) : null;
@@ -447,7 +563,7 @@ Analyze the request. Provide a concise execution plan.
           apiKey!, 
           plannerModel, 
           [{role: 'user', content: plannerPrompt}], 
-          false, // No tools for planner
+          false,
           customHeaders
         );
         plan = res.choices[0]?.message?.content || "";
@@ -573,7 +689,7 @@ ${useLazyLoading ? 'REMINDER: You are in Low-Token mode. Use search_files or rea
     if (isGemini) {
       const fullParts = [{ text: systemInstruction }, ...contentParts];
       const res = await callGemini(activeAgentModel, fullParts, apiKey!, true, useInternet);
-      
+
       if (res.functionCalls && res.functionCalls.length > 0) {
         processToolCalls(res.functionCalls);
       }
@@ -616,5 +732,195 @@ ${useLazyLoading ? 'REMINDER: You are in Low-Token mode. Use search_files or rea
       response: "", 
       error: `AI Service Error: ${error.message}. Please check your API key and try again.` 
     };
+  }
+};
+
+// Streaming version
+export const streamFixCodeWithGemini = async (
+  request: FixRequest,
+  callbacks: StreamingCallbacks,
+  signal?: AbortSignal
+): Promise<void> => {
+  const { llmConfig, history, currentMessage, allFiles, activeFile, mode, attachments, roles, knowledgeBase, useInternet, currentTodos } = request;
+
+  const isGemini = llmConfig.provider === 'gemini';
+  const isLocal = llmConfig.provider === 'local';
+
+  // Gemini doesn't support streaming with tools yet
+  if (isGemini) {
+    callbacks.onError('Streaming is not supported for Gemini with tools. Please disable streaming or use another provider.');
+    return;
+  }
+
+  let apiKey = llmConfig.apiKey;
+  let baseUrl = llmConfig.baseUrl;
+
+  // Handle local provider configuration
+  if (isLocal) {
+    const localConfig = getLocalProviderConfig('custom', baseUrl);
+    baseUrl = localConfig.baseUrl || baseUrl;
+
+    if (localConfig.requiresAuth && !apiKey) {
+      callbacks.onError(`API Key required for ${localConfig.name}`);
+      return;
+    }
+  } else if (llmConfig.provider === 'openrouter') {
+    baseUrl = 'https://openrouter.ai/api/v1';
+  } else if (llmConfig.provider === 'openai') {
+    baseUrl = baseUrl || 'https://api.openai.com/v1';
+  }
+
+  // Validate API key
+  if ((llmConfig.provider === 'openai' || llmConfig.provider === 'openrouter') && !apiKey) {
+    callbacks.onError("Missing API Key. Please configure it in settings.");
+    return;
+  }
+
+  try {
+    // Calculate Context Size
+    const totalChars = allFiles.reduce((acc, f) => acc + f.content.length, 0);
+    const useLazyLoading = totalChars > LAZY_LOAD_THRESHOLD && !request.useHighCapacity;
+
+    // Build File Context
+    let fileContext = "";
+
+    if (useLazyLoading) {
+      fileContext = `
+PROJECT FILE INDEX (Content Hidden to Save Tokens):
+${allFiles.map(f => `- ${f.name} (${f.language})`).join('\n')}
+
+ACTIVE FILE (Full Content):
+File: ${activeFile.name}
+\`\`\`${activeFile.language}
+${activeFile.content}
+\`\`\`
+
+NOTE: You do not see the full content of other files. 
+Use the 'read_file' tool to get the content of a specific file if needed.
+Use 'search_files' to find specific code patterns.
+      `;
+    } else {
+      fileContext = allFiles.map(f => `File: ${f.name} (${f.language})\n\`\`\`${f.language}\n${f.content}\n\`\`\``).join('\n\n');
+    }
+
+    const tagsInMessage: string[] = currentMessage.match(/#[\w-]+/g) || [];
+    const relevantKnowledge = knowledgeBase.filter(entry => 
+      entry.tags.some(tag => tagsInMessage.includes(tag)) || 
+      entry.tags.includes('#global')
+    );
+
+    const knowledgeContext = relevantKnowledge.length > 0 
+      ? `\n\nRELEVANT KNOWLEDGE:\n${relevantKnowledge.map(k => `- [${k.tags.join(', ')}]: ${k.content}`).join('\n')}`
+      : "";
+
+    const plannerRole = roles.find(r => r.id === llmConfig.plannerRoleId) || roles[0];
+    const coderRole = roles.find(r => r.id === llmConfig.coderRoleId) || roles[1];
+    const todoContext = currentTodos.length > 0 
+      ? `\nTO-DO LIST:\n${currentTodos.map(t => `- [${t.status}] ${t.task} (Phase: ${t.phase})`).join('\n')}`
+      : "";
+
+    // --- STEP 1: PLANNER ---
+    let plan = "";
+    if (mode === 'FIX') {
+      const plannerPrompt = `
+${plannerRole.systemPrompt}
+${knowledgeContext}
+${todoContext}
+
+User Request: "${currentMessage}"
+Active File: ${activeFile.name}
+Project Structure: ${allFiles.map(f => f.name).join(', ')}
+
+Analyze the request. Provide a concise execution plan.
+      `;
+
+      try {
+        const plannerModel = llmConfig.plannerModelId || llmConfig.activeModelId;
+        const localConfig = isLocal ? getLocalProviderConfig('custom', baseUrl) : null;
+        const customHeaders = localConfig?.customHeaders || {};
+
+        const res = await callOpenAICompatible(
+          baseUrl!, 
+          apiKey!, 
+          plannerModel, 
+          [{role: 'user', content: plannerPrompt}], 
+          false,
+          customHeaders,
+          signal
+        );
+        plan = res.choices[0]?.message?.content || "";
+      } catch (e) {
+        console.warn('Planner failed, proceeding directly:', e);
+        plan = "Proceeding directly.";
+      }
+    }
+
+    // --- STEP 2: EXECUTOR ---
+    let activeAgentModel = llmConfig.chatModelId;
+    if (mode === 'FIX') activeAgentModel = llmConfig.coderModelId;
+    if (!activeAgentModel) activeAgentModel = llmConfig.activeModelId;
+
+    let systemInstruction = "";
+
+    if (mode === 'NORMAL') {
+      systemInstruction = `
+You are a helpful AI assistant. 
+${knowledgeContext}
+      `;
+    } else {
+      systemInstruction = `
+${coderRole.systemPrompt}
+Task: ${mode === 'FIX' ? 'Execute the plan.' : 'Explain/Answer.'}
+
+${mode === 'FIX' ? `PLAN:\n${plan}` : ''}
+
+${fileContext}
+${todoContext}
+${knowledgeContext}
+
+USER REQUEST: ${currentMessage}
+
+${mode === 'FIX' ? 'Use tools to apply changes.' : ''}
+${useLazyLoading ? 'REMINDER: You are in Low-Token mode. Use search_files or read_file to see code not listed above.' : ''}
+      `;
+    }
+
+    let openAIMessages: any[] = [
+      { role: 'system', content: systemInstruction },
+    ];
+
+    // Add recent history (last 4 messages to save tokens)
+    history.slice(-4).forEach(h => {
+      openAIMessages.push({ 
+        role: h.role === 'model' ? 'assistant' : 'user', 
+        content: h.content 
+      });
+    });
+
+    openAIMessages.push({ role: 'user', content: currentMessage });
+
+    const localConfig = isLocal ? getLocalProviderConfig('custom', baseUrl) : null;
+    const customHeaders = localConfig?.customHeaders || {};
+
+    const fullContent = await callOpenAICompatibleStream(
+      baseUrl!, 
+      apiKey!, 
+      activeAgentModel, 
+      openAIMessages, 
+      true,
+      customHeaders,
+      callbacks.onContent,
+      undefined, // Tool calls not supported in streaming yet
+      signal
+    );
+
+    callbacks.onComplete(fullContent);
+
+  } catch (error: any) {
+    if (error.name === 'AbortError') {
+      return; // Silent abort
+    }
+    console.error('Streaming LLM Error:', error);
+    callbacks.onError(`AI Service Error: ${error.message}. Please check your API key and try again.`);
   }
 };
