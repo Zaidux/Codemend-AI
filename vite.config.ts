@@ -30,6 +30,48 @@ export default defineConfig(({ mode }) => {
                     statuses: [0, 200]
                   }
                 }
+              },
+              {
+                urlPattern: /^https:\/\/cdnjs\.cloudflare\.com\/.*/i,
+                handler: 'CacheFirst',
+                options: {
+                  cacheName: 'cdnjs-cache',
+                  expiration: {
+                    maxEntries: 20,
+                    maxAgeSeconds: 60 * 60 * 24 * 30 // 30 days
+                  },
+                  cacheableResponse: {
+                    statuses: [0, 200]
+                  }
+                }
+              },
+              {
+                urlPattern: /^https:\/\/fonts\.googleapis\.com\/.*/i,
+                handler: 'CacheFirst',
+                options: {
+                  cacheName: 'google-fonts-cache',
+                  expiration: {
+                    maxEntries: 10,
+                    maxAgeSeconds: 60 * 60 * 24 * 365 // 1 year
+                  },
+                  cacheableResponse: {
+                    statuses: [0, 200]
+                  }
+                }
+              },
+              {
+                urlPattern: /^https:\/\/aistudiocdn\.com\/.*/i,
+                handler: 'CacheFirst',
+                options: {
+                  cacheName: 'ai-studio-cdn-cache',
+                  expiration: {
+                    maxEntries: 30,
+                    maxAgeSeconds: 60 * 60 * 24 * 7 // 7 days
+                  },
+                  cacheableResponse: {
+                    statuses: [0, 200]
+                  }
+                }
               }
             ]
           },
@@ -45,12 +87,12 @@ export default defineConfig(({ mode }) => {
             start_url: '/',
             icons: [
               {
-                src: 'icon.jpg',
+                src: 'pwa-192x192.png',
                 sizes: '192x192',
-                type: 'image/jpg'
+                type: 'image/png'
               },
               {
-                src: 'icon.png',
+                src: 'pwa-512x512.png',
                 sizes: '512x512',
                 type: 'image/png'
               },
@@ -88,6 +130,18 @@ export default defineConfig(({ mode }) => {
       resolve: {
         alias: {
           '@': path.resolve(__dirname, '.'),
+        }
+      },
+      // Add build configuration for better PWA support
+      build: {
+        sourcemap: true,
+        rollupOptions: {
+          output: {
+            manualChunks: {
+              vendor: ['react', 'react-dom'],
+              ui: ['lucide-react']
+            }
+          }
         }
       }
     };
