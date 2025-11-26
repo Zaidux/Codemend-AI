@@ -111,6 +111,47 @@ export interface GitHubConfig {
     personalAccessToken?: string;
 }
 
+export interface CompressionConfig {
+  enabled: boolean;
+  maxFiles: number;
+  maxFileSize: number;
+  autoSummarize: boolean;
+  preserveStructure: boolean;
+}
+
+export interface ProjectSummary {
+  id: string;
+  projectId: string;
+  summary: string;
+  keyFiles: string[];
+  architecture: string;
+  dependencies: string[];
+  entryPoints: string[];
+  timestamp: number;
+}
+
+export interface FileSummary {
+  fileId: string;
+  fileName: string;
+  summary: string;
+  purpose: string;
+  keyFunctions: string[];
+  dependencies: string[];
+  complexity: 'low' | 'medium' | 'high';
+}
+
+export interface ContextTransfer {
+  id: string;
+  sourceModel: string;
+  targetModel: string;
+  projectSummary: ProjectSummary;
+  conversationContext: string;
+  currentTask: string;
+  completedSteps: string[];
+  pendingSteps: string[];
+  timestamp: number;
+}
+
 export interface LLMConfig {
     provider: LLMProvider;
     apiKey?: string;
@@ -123,6 +164,7 @@ export interface LLMConfig {
     coderModelId: string;
     chatModelId: string;
     github?: GitHubConfig;
+    compression?: CompressionConfig; // Added
 }
 
 export interface FixRequest {
@@ -138,6 +180,9 @@ export interface FixRequest {
   knowledgeBase: KnowledgeEntry[];
   useInternet: boolean;
   currentTodos: TodoItem[];
+  projectSummary?: ProjectSummary; // Added
+  useCompression?: boolean; // Added
+  contextTransfer?: ContextTransfer; // Added
 }
 
 export interface ToolCall {
