@@ -1,4 +1,3 @@
-
 import * as React from 'react';
 import { useState, useEffect, useRef } from 'react';
 import { Sparkles, Play, Wrench, X, Settings, MessageSquare, Plus, Trash2, Send, Sidebar as SidebarIcon, LayoutTemplate, FileCode, FolderOpen, FilePlus, Code2, ArrowLeft, Eye, Image as ImageIcon, Mic, StopCircle, BookOpen, Book, Globe, Brain, Check, ListTodo, GitCompare, Github, Download } from 'lucide-react';
@@ -12,8 +11,8 @@ import TodoList from './components/TodoList';
 import DiffViewer from './components/DiffViewer';
 import { THEMES, DEFAULT_LLM_CONFIG, DEFAULT_ROLES } from './constants';
 import { CodeLanguage, AppMode, ThemeType, Session, ChatMessage, ViewMode, ProjectFile, LLMConfig, Project, Attachment, AgentRole, KnowledgeEntry, TodoItem, FileDiff } from './types';
-import { fixCodeWithGemini } from './services/llmService';
-import { fetchRepoContents } from './services/githubService';
+import { fixCodeWithGemini, streamFixCodeWithGemini } from './services/llmService';
+import { fetchRepoContents, parseGitHubUrl } from './services/githubService';
 
 // --- FACTORY FUNCTIONS ---
 
@@ -44,9 +43,32 @@ const createNewSession = (projectId: string): Session => ({
     mode: 'FIX'
 });
 
+// Streaming message component
+const StreamingMessage: React.FC<{ content: string; theme: any }> = ({ content, theme }) => {
+  const [displayedContent, setDisplayedContent] = useState('');
+
+  useEffect(() => {
+    setDisplayedContent('');
+    let index = 0;
+    
+    const timer = setInterval(() => {
+      if (index < content.length) {
+        setDisplayedContent(prev => prev + content[index]);
+        index++;
+      } else {
+        clearInterval(timer);
+      }
+    }, 10); // Adjust speed as needed
+
+    return () => clearInterval(timer);
+  }, [content]);
+
+  return <MarkdownRenderer content={displayedContent} theme={theme} />;
+};
+
 const App: React.FC = () => {
   // --- STATE ---
-  
+
   // Settings
   const [themeName, setThemeName] = useState<ThemeType>(() => (localStorage.getItem('cm_theme') as ThemeType) || 'cosmic');
   const [viewMode, setViewMode] = useState<ViewMode>(() => (localStorage.getItem('cm_view_mode') as ViewMode) || 'classic');
@@ -59,14 +81,14 @@ const App: React.FC = () => {
     const saved = localStorage.getItem('cm_roles');
     return saved ? JSON.parse(saved) : DEFAULT_ROLES;
   });
-  
+
   // UI Flags
   const [showSettings, setShowSettings] = useState<boolean>(false);
   const [isSidebarOpen, setIsSidebarOpen] = useState<boolean>(true);
   const [isEditorOpen, setIsEditorOpen] = useState<boolean>(false);
   const [showGithubInput, setShowGithubInput] = useState(false);
   const [repoInput, setRepoInput] = useState('');
-  
+
   // Left Panel Tab State
   const [leftPanelTab, setLeftPanelTab] = useState<'code' | 'preview' | 'todos'>('code');
 
@@ -78,13 +100,13 @@ const App: React.FC = () => {
       if (saved) return JSON.parse(saved);
       return [createNewProject()];
   });
-  
+
   const [sessions, setSessions] = useState<Session[]>(() => {
       const saved = localStorage.getItem('cm_sessions_v2');
       if (saved) return JSON.parse(saved);
       return [];
   });
-  
+
   const [knowledgeBase, setKnowledgeBase] = useState<KnowledgeEntry[]>(() => {
       const saved = localStorage.getItem('cm_knowledge');
       return saved ? JSON.parse(saved) : [];
@@ -92,18 +114,21 @@ const App: React.FC = () => {
 
   const [currentProjectId, setCurrentProjectId] = useState<string>(() => projects[0]?.id || '');
   const [currentSessionId, setCurrentSessionId] = useState<string>('');
-  
+
   // To-Do List & Diff Engine
   const [todoList, setTodoList] = useState<TodoItem[]>([]);
   const [pendingDiffs, setPendingDiffs] = useState<FileDiff[]>([]);
-  
+
   // Features
   const [useInternet, setUseInternet] = useState(false);
+  const [useStreaming, setUseStreaming] = useState<boolean>(() => 
+    localStorage.getItem('cm_use_streaming') !== 'false' // Default to true
+  );
 
   // Derived State
   const activeProject = projects.find(p => p.id === currentProjectId) || projects[0];
   const activeFile = activeProject.files.find(f => f.id === activeProject.activeFileId) || activeProject.files[0];
-  
+
   const activeSession = sessions.find(s => s.id === currentSessionId) || {
       id: 'temp', projectId: activeProject.id, title: 'New Chat', messages: [], lastModified: Date.now(), mode: 'FIX' as AppMode
   };
@@ -117,10 +142,13 @@ const App: React.FC = () => {
   // Status
   const [isLoading, setIsLoading] = useState<boolean>(false);
   const [error, setError] = useState<string | null>(null);
+  const [streamingMessageId, setStreamingMessageId] = useState<string | null>(null);
+  const [streamingContent, setStreamingContent] = useState<string>('');
 
   // Refs
   const chatContainerRef = useRef<HTMLDivElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const abortControllerRef = useRef<AbortController | null>(null);
   const theme = THEMES[themeName];
 
   // --- PERSISTENCE ---
@@ -132,6 +160,7 @@ const App: React.FC = () => {
   useEffect(() => { localStorage.setItem('cm_projects', JSON.stringify(projects)); }, [projects]);
   useEffect(() => { localStorage.setItem('cm_sessions_v2', JSON.stringify(sessions)); }, [sessions]);
   useEffect(() => { localStorage.setItem('cm_knowledge', JSON.stringify(knowledgeBase)); }, [knowledgeBase]);
+  useEffect(() => { localStorage.setItem('cm_use_streaming', String(useStreaming)); }, [useStreaming]);
 
   // Ensure a session exists
   useEffect(() => {
@@ -149,7 +178,7 @@ const App: React.FC = () => {
     if (chatContainerRef.current) {
       chatContainerRef.current.scrollTop = chatContainerRef.current.scrollHeight;
     }
-  }, [activeSession.messages, isLoading, viewMode, isEditorOpen]);
+  }, [activeSession.messages, isLoading, viewMode, isEditorOpen, streamingContent]);
 
   useEffect(() => {
     if (viewMode === 'classic') {
@@ -190,7 +219,7 @@ const App: React.FC = () => {
     if (trimmed.includes('public class')) return CodeLanguage.JAVA;
     return CodeLanguage.JAVASCRIPT;
   };
-  
+
   const handleApplyDiff = (diff: FileDiff) => {
       const updatedFiles = [...activeProject.files];
       if (diff.type === 'create') {
@@ -246,14 +275,13 @@ const App: React.FC = () => {
       setCurrentProjectId(p.id);
       setCurrentSessionId(s.id);
   };
-  
+
   const handleImportGithub = async () => {
       if (!repoInput) return;
       setIsLoading(true);
       try {
-          const [owner, repo] = repoInput.split('/');
-          if (!owner || !repo) throw new Error("Invalid repo format. Use owner/repo");
-          const p = await fetchRepoContents(owner, repo, llmConfig.github?.personalAccessToken);
+          // Use the new fetchRepoContents that accepts URLs
+          const p = await fetchRepoContents(repoInput, llmConfig.github?.personalAccessToken);
           const s = createNewSession(p.id);
           setProjects([p, ...projects]);
           setSessions([...sessions, s]);
@@ -273,7 +301,7 @@ const App: React.FC = () => {
       setSessions([...sessions, s]);
       setCurrentSessionId(s.id);
   };
-  
+
   const handleImageUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
       if (e.target.files && e.target.files[0]) {
           const file = e.target.files[0];
@@ -314,6 +342,16 @@ const App: React.FC = () => {
       }
   };
 
+  const stopStreaming = () => {
+    if (abortControllerRef.current) {
+      abortControllerRef.current.abort();
+      abortControllerRef.current = null;
+    }
+    setIsLoading(false);
+    setStreamingMessageId(null);
+    setStreamingContent('');
+  };
+
   // --- LLM ---
 
   const handleSendMessage = async () => {
@@ -333,80 +371,161 @@ const App: React.FC = () => {
       messages: newMessages,
       title: activeSession.messages.length === 0 ? (promptText ? promptText.slice(0, 30) : 'Multimodal Chat') : activeSession.title 
     });
-    
+
     setInputInstruction('');
     setAttachments([]);
     setIsLoading(true);
     setError(null);
 
-    const response = await fixCodeWithGemini({
-      activeFile: activeFile,
-      allFiles: activeProject.files,
-      history: newMessages,
-      currentMessage: promptText || "Analyze.",
-      attachments: userMsg.attachments,
-      mode: activeSession.mode,
-      useHighCapacity: highCapacity,
-      llmConfig: llmConfig,
-      roles: roles,
-      knowledgeBase: knowledgeBase,
-      useInternet: useInternet,
-      currentTodos: todoList
-    });
+    // Create a temporary streaming message
+    const streamingMsgId = crypto.randomUUID();
+    setStreamingMessageId(streamingMsgId);
+    setStreamingContent('');
 
-    if (response.error) {
-      setError(response.error);
-      setIsLoading(false);
-      return;
+    if (useStreaming && llmConfig.provider !== 'gemini') {
+      // Use streaming for compatible providers
+      await handleStreamingResponse(newMessages, streamingMsgId);
+    } else {
+      // Use regular response for Gemini or when streaming is disabled
+      await handleRegularResponse(newMessages, streamingMsgId);
     }
+  };
 
-    // Handle Tool Calls
+  const handleRegularResponse = async (newMessages: ChatMessage[], streamingMsgId: string) => {
+    try {
+      const response = await fixCodeWithGemini({
+        activeFile: activeFile,
+        allFiles: activeProject.files,
+        history: newMessages,
+        currentMessage: newMessages[newMessages.length - 1].content,
+        attachments: newMessages[newMessages.length - 1].attachments,
+        mode: activeSession.mode,
+        useHighCapacity: highCapacity,
+        llmConfig: llmConfig,
+        roles: roles,
+        knowledgeBase: knowledgeBase,
+        useInternet: useInternet,
+        currentTodos: todoList
+      });
+
+      if (response.error) {
+        setError(response.error);
+        return;
+      }
+
+      processAIResponse(response, newMessages);
+    } catch (error: any) {
+      setError(error.message);
+    } finally {
+      setIsLoading(false);
+      setStreamingMessageId(null);
+      setStreamingContent('');
+    }
+  };
+
+  const handleStreamingResponse = async (newMessages: ChatMessage[], streamingMsgId: string) => {
+    abortControllerRef.current = new AbortController();
+
+    try {
+      await streamFixCodeWithGemini({
+        activeFile: activeFile,
+        allFiles: activeProject.files,
+        history: newMessages,
+        currentMessage: newMessages[newMessages.length - 1].content,
+        attachments: newMessages[newMessages.length - 1].attachments,
+        mode: activeSession.mode,
+        useHighCapacity: highCapacity,
+        llmConfig: llmConfig,
+        roles: roles,
+        knowledgeBase: knowledgeBase,
+        useInternet: useInternet,
+        currentTodos: todoList
+      }, {
+        onContent: (content) => {
+          setStreamingContent(prev => prev + content);
+        },
+        onToolCalls: (toolCalls) => {
+          processToolCalls(toolCalls);
+        },
+        onProposedChanges: (changes) => {
+          setPendingDiffs(prev => [...prev, ...changes]);
+        },
+        onComplete: (fullResponse) => {
+          const aiMsg: ChatMessage = {
+            id: streamingMsgId,
+            role: 'model',
+            content: fullResponse,
+            timestamp: Date.now()
+          };
+          updateSession({ messages: [...newMessages, aiMsg] });
+        },
+        onError: (error) => {
+          setError(error);
+        }
+      }, abortControllerRef.current.signal);
+    } catch (error: any) {
+      if (error.name !== 'AbortError') {
+        setError(error.message);
+      }
+    } finally {
+      setIsLoading(false);
+      setStreamingMessageId(null);
+      setStreamingContent('');
+      abortControllerRef.current = null;
+    }
+  };
+
+  const processToolCalls = (toolCalls: any[]) => {
+    let newKnowledge = [...knowledgeBase];
+    let newTodos = [...todoList];
+
+    toolCalls.forEach(call => {
+      if (call.name === 'save_knowledge') {
+        const entry: KnowledgeEntry = {
+          id: crypto.randomUUID(),
+          tags: call.args.tags,
+          content: call.args.content,
+          scope: 'global',
+          timestamp: Date.now()
+        };
+        newKnowledge.push(entry);
+      } else if (call.name === 'manage_tasks') {
+        const { action, task, phase, taskId, status } = call.args;
+        if (action === 'add') {
+          newTodos.push({ id: crypto.randomUUID(), task, phase: phase || 'General', status: 'pending' });
+        } else if (action === 'update' && taskId) {
+          newTodos = newTodos.map(t => t.id === taskId ? { ...t, status: status || t.status } : t);
+        } else if (action === 'complete' && taskId) {
+          newTodos = newTodos.map(t => t.id === taskId ? { ...t, status: 'completed' } : t);
+        } else if (action === 'delete' && taskId) {
+          newTodos = newTodos.filter(t => t.id !== taskId);
+        }
+      }
+    });
+    
+    if (newKnowledge.length > knowledgeBase.length) setKnowledgeBase(newKnowledge);
+    if (JSON.stringify(newTodos) !== JSON.stringify(todoList)) {
+      setTodoList(newTodos);
+      setLeftPanelTab('todos');
+    }
+  };
+
+  const processAIResponse = (response: any, newMessages: ChatMessage[]) => {
     if (response.toolCalls && response.toolCalls.length > 0) {
-       let newKnowledge = [...knowledgeBase];
-       let newTodos = [...todoList];
-       
-       response.toolCalls.forEach(call => {
-           if (call.name === 'save_knowledge') {
-                const entry: KnowledgeEntry = {
-                    id: crypto.randomUUID(),
-                    tags: call.args.tags,
-                    content: call.args.content,
-                    scope: 'global',
-                    timestamp: Date.now()
-                };
-                newKnowledge.push(entry);
-           } else if (call.name === 'manage_tasks') {
-               const { action, task, phase, taskId, status } = call.args;
-               if (action === 'add') {
-                   newTodos.push({ id: crypto.randomUUID(), task, phase: phase || 'General', status: 'pending' });
-               } else if (action === 'update' && taskId) {
-                   newTodos = newTodos.map(t => t.id === taskId ? { ...t, status: status || t.status } : t);
-               } else if (action === 'complete' && taskId) {
-                   newTodos = newTodos.map(t => t.id === taskId ? { ...t, status: 'completed' } : t);
-               } else if (action === 'delete' && taskId) {
-                   newTodos = newTodos.filter(t => t.id !== taskId);
-               }
-           }
-       });
-       if (newKnowledge.length > knowledgeBase.length) setKnowledgeBase(newKnowledge);
-       if (JSON.stringify(newTodos) !== JSON.stringify(todoList)) {
-           setTodoList(newTodos);
-           setLeftPanelTab('todos');
-       }
+      processToolCalls(response.toolCalls);
     }
 
     if (response.proposedChanges && response.proposedChanges.length > 0) {
-        setPendingDiffs(prev => [...prev, ...response.proposedChanges!]);
+      setPendingDiffs(prev => [...prev, ...response.proposedChanges!]);
     }
 
     const aiMsg: ChatMessage = {
-        id: crypto.randomUUID(),
-        role: 'model',
-        content: response.response,
-        timestamp: Date.now()
+      id: crypto.randomUUID(),
+      role: 'model',
+      content: response.response,
+      timestamp: Date.now()
     };
     updateSession({ messages: [...newMessages, aiMsg] });
-    setIsLoading(false);
   };
 
   // --- RENDER ---
@@ -430,7 +549,7 @@ const App: React.FC = () => {
          </div>
 
          <div className="flex-1 overflow-y-auto custom-scrollbar relative">
-             
+
              {/* CHATS TAB */}
              {activeTab === 'chats' && (
                  <div className="p-2 space-y-2">
@@ -439,7 +558,7 @@ const App: React.FC = () => {
                          <button onClick={() => setShowGithubInput(!showGithubInput)} title="Clone from GitHub"><Github className="w-3 h-3 hover:text-white mr-2 inline" /></button>
                          <button onClick={handleCreateProject}><Plus className="w-3 h-3 hover:text-white" /></button>
                      </div>
-                     
+
                      {showGithubInput && (
                          <div className="px-2 mb-2 animate-in slide-in-from-top-2">
                              <input 
@@ -447,7 +566,7 @@ const App: React.FC = () => {
                                 value={repoInput}
                                 onChange={(e) => setRepoInput(e.target.value)}
                                 onKeyDown={(e) => e.key === 'Enter' && handleImportGithub()}
-                                placeholder="owner/repo"
+                                placeholder="owner/repo or https://github.com/owner/repo"
                                 className={`w-full text-xs ${theme.bgApp} border ${theme.border} rounded px-2 py-1 mb-1`}
                              />
                              <button onClick={handleImportGithub} className={`w-full text-xs ${theme.button} text-white rounded py-1`}>Clone</button>
@@ -515,14 +634,14 @@ const App: React.FC = () => {
         <Header theme={theme} viewMode={viewMode} onOpenSettings={() => setShowSettings(true)} />
 
         <div className="flex-grow flex flex-col lg:flex-row overflow-hidden relative">
-          
+
           {/* EDITOR / PREVIEW / TODO PANEL */}
           <div className={`flex flex-col border-b lg:border-b-0 lg:border-r ${theme.border} transition-all duration-300 ${viewMode === 'classic' ? 'w-full h-1/2 lg:h-auto lg:w-1/2' : isEditorOpen ? 'w-full h-full lg:w-1/2 absolute lg:relative z-20 lg:z-0 bg-slate-900 lg:bg-transparent' : 'hidden lg:w-0'}`}>
              <div className={`${theme.bgPanel} border-b ${theme.border} flex items-center justify-between h-12 flex-shrink-0 px-2`}>
                 <div className="flex items-center gap-1 overflow-x-auto no-scrollbar mask-gradient-right max-w-[60%]">
                    {viewMode === 'chat' && <button onClick={() => setIsEditorOpen(false)} className="lg:hidden p-2 mr-2 hover:bg-white/10 rounded"><ArrowLeft className="w-4 h-4" /></button>}
                    {viewMode === 'classic' && <button onClick={() => setIsSidebarOpen(!isSidebarOpen)} className={`p-2 mr-2 rounded hover:bg-white/5 ${theme.textMuted} lg:hidden`}><SidebarIcon className="w-4 h-4" /></button>}
-                   
+
                    {activeProject.files.map(file => (
                        <button
                          key={file.id}
@@ -550,7 +669,7 @@ const App: React.FC = () => {
                 {leftPanelTab === 'todos' && <TodoList todos={todoList} theme={theme} onToggle={(id) => setTodoList(prev => prev.map(t => t.id === id ? {...t, status: t.status === 'completed' ? 'pending' : 'completed'} : t))} />}
                 {leftPanelTab === 'code' && <CodeEditor value={activeFile.content} onChange={updateActiveFileContent} language={activeFile.language.toLowerCase()} theme={theme} themeType={themeName} />}
              </div>
-             
+
              {viewMode === 'classic' && (
                 <div className={`p-4 border-t ${theme.border} ${theme.bgPanel} flex-shrink-0`}>
                    <div className="flex gap-2 mb-3">
@@ -573,9 +692,14 @@ const App: React.FC = () => {
                        <button onClick={() => setIsSidebarOpen(!isSidebarOpen)} className="lg:hidden p-1.5 rounded hover:bg-white/5"><SidebarIcon className="w-4 h-4" /></button>
                        <span className={`text-sm font-semibold ${theme.textMain} truncate`}>{activeProject.name} / {activeSession.title}</span>
                      </div>
-                     <button onClick={() => setIsEditorOpen(!isEditorOpen)} className={`flex items-center gap-1.5 px-3 py-1.5 rounded-full text-xs font-medium border ${isEditorOpen ? `${theme.accentBg} ${theme.accent} border-${theme.accent}/20` : `${theme.bgApp} border-${theme.border} ${theme.textMuted}`}`}>
-                        <Code2 className="w-3.5 h-3.5" /> <span className="hidden sm:inline">{isEditorOpen ? 'Hide Code' : 'View Code'}</span>
-                     </button>
+                     <div className="flex items-center gap-2">
+                       <button onClick={() => setUseStreaming(!useStreaming)} className={`text-xs px-2 py-1 rounded border ${useStreaming ? 'bg-green-500/20 text-green-400 border-green-500/30' : 'bg-gray-500/20 text-gray-400 border-gray-500/30'}`}>
+                         {useStreaming ? 'Streaming: ON' : 'Streaming: OFF'}
+                       </button>
+                       <button onClick={() => setIsEditorOpen(!isEditorOpen)} className={`flex items-center gap-1.5 px-3 py-1.5 rounded-full text-xs font-medium border ${isEditorOpen ? `${theme.accentBg} ${theme.accent} border-${theme.accent}/20` : `${theme.bgApp} border-${theme.border} ${theme.textMuted}`}`}>
+                         <Code2 className="w-3.5 h-3.5" /> <span className="hidden sm:inline">{isEditorOpen ? 'Hide Code' : 'View Code'}</span>
+                       </button>
+                     </div>
                   </div>
              )}
 
@@ -588,7 +712,7 @@ const App: React.FC = () => {
                         <a href="/README.md" target="_blank" className="text-xs mt-4 underline hover:text-white">View Documentation & License</a>
                     </div>
                 )}
-                
+
                 {activeSession.messages.map((msg) => (
                     <div key={msg.id} className={`flex flex-col ${msg.role === 'user' ? 'items-end' : 'items-start'}`}>
                         <div className={`max-w-[90%] lg:max-w-[85%] rounded-2xl px-5 py-4 shadow-sm ${msg.role === 'user' ? `${theme.accentBg} border border-${theme.accent}/20 rounded-tr-none` : `${theme.bgPanel} border ${theme.border} rounded-tl-none`}`}>
@@ -607,7 +731,17 @@ const App: React.FC = () => {
                         </div>
                     </div>
                 ))}
-                {isLoading && (
+
+                {/* Streaming Message */}
+                {streamingMessageId && (
+                    <div className="flex flex-col items-start">
+                        <div className={`max-w-[90%] lg:max-w-[85%] rounded-2xl px-5 py-4 shadow-sm ${theme.bgPanel} border ${theme.border} rounded-tl-none`}>
+                            <StreamingMessage content={streamingContent} theme={theme} />
+                        </div>
+                    </div>
+                )}
+
+                {isLoading && !streamingMessageId && (
                     <div className="flex flex-col items-start animate-pulse">
                         <div className={`${theme.bgPanel} border ${theme.border} rounded-2xl rounded-tl-none px-5 py-4 flex items-center gap-3`}>
                              <div className={`w-2 h-2 rounded-full ${theme.accent} bg-current animate-bounce`}></div>
@@ -654,8 +788,13 @@ const App: React.FC = () => {
                         <button onClick={() => updateSession({ mode: 'EXPLAIN' })} className={`px-3 py-1.5 rounded-full text-xs font-medium border transition-all flex items-center gap-1.5 ${activeSession.mode === 'EXPLAIN' ? `${theme.button} border-transparent text-white` : `border-${theme.border} ${theme.textMuted}`}`}><BookOpen className="w-3 h-3"/> Explain</button>
                         <button onClick={() => updateSession({ mode: 'NORMAL' })} className={`px-3 py-1.5 rounded-full text-xs font-medium border transition-all flex items-center gap-1.5 ${activeSession.mode === 'NORMAL' ? `${theme.button} border-transparent text-white` : `border-${theme.border} ${theme.textMuted}`}`}><Brain className="w-3 h-3"/> Normal</button>
                         <button onClick={() => setUseInternet(!useInternet)} className={`px-3 py-1.5 rounded-full text-xs font-medium border transition-all flex items-center gap-1.5 ${useInternet ? `bg-blue-600 border-transparent text-white` : `border-${theme.border} ${theme.textMuted}`}`}><Globe className="w-3 h-3"/> Internet</button>
+                        {isLoading && (
+                            <button onClick={stopStreaming} className={`px-3 py-1.5 rounded-full text-xs font-medium border transition-all flex items-center gap-1.5 bg-red-600 border-transparent text-white`}>
+                                <StopCircle className="w-3 h-3"/> Stop
+                            </button>
+                        )}
                      </div>
-                     
+
                      <div className="relative flex items-end gap-2">
                         <div className="flex flex-col gap-1 absolute left-2 bottom-3 z-10">
                             <input type="file" ref={fileInputRef} onChange={handleImageUpload} accept="image/*" className="hidden" />
@@ -671,7 +810,11 @@ const App: React.FC = () => {
                           rows={1}
                           style={{minHeight: '46px'}}
                         />
-                        <button onClick={handleSendMessage} disabled={isLoading} className={`p-3 rounded-xl flex-shrink-0 transition-all ${isLoading ? 'bg-white/5 text-slate-500 cursor-not-allowed' : `${theme.button} ${theme.buttonHover} text-white shadow-lg`}`}>
+                        <button 
+                          onClick={handleSendMessage} 
+                          disabled={isLoading} 
+                          className={`p-3 rounded-xl flex-shrink-0 transition-all ${isLoading ? 'bg-white/5 text-slate-500 cursor-not-allowed' : `${theme.button} ${theme.buttonHover} text-white shadow-lg`}`}
+                        >
                           <Send className="w-5 h-5" />
                         </button>
                      </div>
@@ -680,7 +823,24 @@ const App: React.FC = () => {
           </div>
         </div>
       </div>
-      {showSettings && <SettingsModal theme={theme} themeName={themeName} setThemeName={setThemeName} viewMode={viewMode} setViewMode={setViewMode} highCapacity={highCapacity} setHighCapacity={setHighCapacity} llmConfig={llmConfig} setLlmConfig={setLlmConfig} roles={roles} setRoles={setRoles} onClose={() => setShowSettings(false)} />}
+      {showSettings && (
+        <SettingsModal 
+          theme={theme} 
+          themeName={themeName} 
+          setThemeName={setThemeName} 
+          viewMode={viewMode} 
+          setViewMode={setViewMode} 
+          highCapacity={highCapacity} 
+          setHighCapacity={setHighCapacity} 
+          llmConfig={llmConfig} 
+          setLlmConfig={setLlmConfig} 
+          roles={roles} 
+          setRoles={setRoles} 
+          useStreaming={useStreaming}
+          setUseStreaming={setUseStreaming}
+          onClose={() => setShowSettings(false)} 
+        />
+      )}
     </div>
   );
 };
