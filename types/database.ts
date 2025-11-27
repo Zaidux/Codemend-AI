@@ -1,3 +1,6 @@
+// Import shared types from the main types file
+import { CodeLanguage } from '../types';
+
 // Database schema types
 export interface DatabaseSchema {
   projects: ProjectRecord[];
@@ -186,15 +189,29 @@ export interface StorageMetrics {
 }
 
 // Database configuration
+// UPDATED: Now matches types.ts to support PostgreSQL fields from SettingsModal
 export interface DatabaseConfig {
-  type: 'indexeddb' | 'localstorage' | 'cloud' | 'hybrid';
-  name: string;
-  version: number;
-  cloudSync?: boolean;
-  encryption?: boolean;
+  type: 'indexeddb' | 'postgresql' | 'mongodb' | 'supabase' | 'localstorage' | 'cloud' | 'hybrid';
+  
+  // PostgreSQL / Cloud fields
+  connectionString?: string;
+  databaseName?: string;
+  username?: string;
+  password?: string;
+  host?: string;
+  port?: number;
+  ssl?: boolean;
+  
+  // General Storage fields
   backupEnabled: boolean;
+  encryption: boolean;
   maxSize: number; // in MB
-  autoCompaction: boolean;
+  cloudSync?: boolean;
+
+  // Legacy/Internal fields (Optional)
+  name?: string;
+  version?: number;
+  autoCompaction?: boolean;
 }
 
 // Migration types for database schema updates
@@ -231,4 +248,4 @@ export interface IndexConfig {
   keyPath: string | string[];
   unique?: boolean;
   multiEntry?: boolean;
-  }
+}
