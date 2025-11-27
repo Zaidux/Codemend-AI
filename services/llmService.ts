@@ -97,7 +97,7 @@ interface StreamingCallbacks {
   onContent: (content: string) => void;
   onToolCalls?: (toolCalls: ToolCall[]) => void;
   onProposedChanges?: (changes: FileDiff[]) => void;
-  onStatusUpdate?: (status: string) => void; // <--- ADDED THIS
+  onStatusUpdate?: (status: string) => void;
   onComplete: (fullResponse: string) => void;
   onError: (error: string) => void;
 }
@@ -275,7 +275,6 @@ export const streamFixCodeWithGemini = async (
     // 2. Context Building (Condensed for brevity)
     let fileContext = "";
     if (useCompression && projectSummary) {
-      // Logic same as non-streaming...
       fileContext = `CONTEXT:\n${projectSummary.summary}\nACTIVE:\n${safeActiveFile.content}`;
     } else {
       fileContext = safeAllFiles.map(f => `File: ${f.name}\n\`\`\`${f.language}\n${f.content}\n\`\`\``).join('\n\n');
@@ -299,10 +298,11 @@ export const streamFixCodeWithGemini = async (
 
     let activeAgentModel = llmConfig.chatModelId || llmConfig.activeModelId;
 
-    // --- THE FIX: ACCUMULATE TOOL CALLS ---
+    // --- ACCUMULATE TOOL CALLS ---
     let accumulatedToolCalls: Record<number, { name: string, args: string, id: string }> = {};
 
-    await callOpenAICompatibleStream(
+    // *** FIX: Capture the full text returned by the stream ***
+    const fullTextResponse = await callOpenAICompatibleStream(
       baseUrl, 
       apiKey, 
       activeAgentModel, 
@@ -310,7 +310,7 @@ export const streamFixCodeWithGemini = async (
       true, // Tools enabled
       (isLocal ? getLocalProviderConfig('custom', baseUrl).customHeaders : {}),
       callbacks.onContent,
-      // Handle Tool Call Chunks - WITH STATUS UPDATES
+      // Handle Tool Call Chunks
       (toolCallChunks) => {
         toolCallChunks.forEach((chunk) => {
           const index = chunk.index;
@@ -321,7 +321,7 @@ export const streamFixCodeWithGemini = async (
           if (chunk.function?.name) accumulatedToolCalls[index].name += chunk.function.name;
           if (chunk.function?.arguments) accumulatedToolCalls[index].args += chunk.function.arguments;
 
-          // ADDED: Detect intent and emit status updates
+          // Emit Status Updates
           if (chunk.function?.name && callbacks.onStatusUpdate) {
             const toolName = chunk.function.name;
             if (toolName === 'search_files') callbacks.onStatusUpdate("🔍 Searching project files...");
@@ -383,7 +383,8 @@ export const streamFixCodeWithGemini = async (
       callbacks.onContent(`\n\n[SUCCESS] I have prepared ${proposedChanges.length} file changes. Please review and apply them.`);
     }
 
-    callbacks.onComplete("");
+    // *** FIX: Pass the captured fullTextResponse instead of empty string ***
+    callbacks.onComplete(fullTextResponse || "");
 
   } catch (error: any) {
     if (error.name !== 'AbortError') callbacks.onError(error.message);
