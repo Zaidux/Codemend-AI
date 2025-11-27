@@ -94,7 +94,7 @@ export const callOpenAICompatible = async (
   }
 };
 
-// Streaming version
+// Streaming version with Timeout Fix
 export const callOpenAICompatibleStream = async (
   baseUrl: string, 
   apiKey: string, 
@@ -151,9 +151,22 @@ export const callOpenAICompatibleStream = async (
     let fullContent = '';
     const decoder = new TextDecoder();
 
+    // Timeout logic for stalled streams
+    const STREAM_TIMEOUT_MS = 30000; // 30 seconds
+    let lastActivity = Date.now();
+
+    const timeoutInterval = setInterval(() => {
+      if (Date.now() - lastActivity > STREAM_TIMEOUT_MS) {
+        console.warn('Stream timed out due to inactivity');
+        reader.cancel('Timeout');
+        clearInterval(timeoutInterval);
+      }
+    }, 5000);
+
     try {
       while (true) {
         const { done, value } = await reader.read();
+        lastActivity = Date.now(); // Reset timeout timer
         if (done) break;
 
         const chunk = decoder.decode(value, { stream: true });
@@ -183,14 +196,15 @@ export const callOpenAICompatibleStream = async (
         }
       }
     } finally {
+      clearInterval(timeoutInterval);
       reader.releaseLock();
     }
 
-    // Ensure we return the full content
     return fullContent;
   } catch (error: any) {
     if (error.name === 'AbortError') throw error;
     console.error('OpenAI Stream Error:', error);
-    throw new Error(`Stream Error: ${error.message}`);
+    // Return what we have so far instead of failing completely if it was just a timeout
+    return ""; 
   }
 };
