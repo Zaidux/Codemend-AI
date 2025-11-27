@@ -18,7 +18,7 @@ interface SettingsModalProps {
   onClose: () => void;
   useStreaming: boolean;
   setUseStreaming: (b: boolean) => void;
-  databaseConfig: DatabaseConfig;
+  databaseConfig: DatabaseConfig; // This might be passed as undefined from App.tsx originally
   setDatabaseConfig: (c: DatabaseConfig) => void;
 }
 
@@ -37,6 +37,15 @@ const SettingsModal: React.FC<SettingsModalProps> = ({
   const [isAddingRole, setIsAddingRole] = React.useState(false);
   const [dbConnectionTest, setDbConnectionTest] = React.useState<'idle' | 'testing' | 'success' | 'error'>('idle');
 
+  // SAFEGUARD: Ensure databaseConfig exists before rendering its tab content
+  // If it's undefined, we initialize a local default to prevent crash
+  const safeDbConfig: DatabaseConfig = databaseConfig || {
+    type: 'indexeddb',
+    backupEnabled: true,
+    encryption: false,
+    maxSize: 500
+  };
+
   const updateLLM = (key: keyof LLMConfig, value: any) => {
     setLlmConfig({ ...llmConfig, [key]: value });
   };
@@ -46,7 +55,7 @@ const SettingsModal: React.FC<SettingsModalProps> = ({
   };
 
   const updateDatabaseConfig = (key: keyof DatabaseConfig, value: any) => {
-    setDatabaseConfig({ ...databaseConfig, [key]: value });
+    setDatabaseConfig({ ...safeDbConfig, [key]: value });
   };
 
   const handleAddRole = () => {
@@ -75,10 +84,6 @@ const SettingsModal: React.FC<SettingsModalProps> = ({
     try {
       // Simulate connection test
       await new Promise(resolve => setTimeout(resolve, 2000));
-      
-      // In real implementation:
-      // await databaseService.testConnection();
-      
       setDbConnectionTest('success');
       setTimeout(() => setDbConnectionTest('idle'), 3000);
     } catch (error) {
@@ -137,7 +142,7 @@ const SettingsModal: React.FC<SettingsModalProps> = ({
 
           {activeTab === 'general' && (
             <>
-              {/* Existing General Tab Content */}
+              {/* General Tab Content */}
               <div>
                 <label className={`block text-xs font-bold ${theme.textMuted} mb-3 uppercase tracking-wider`}>Interface Layout</label>
                 <div className="flex gap-2">
@@ -150,7 +155,6 @@ const SettingsModal: React.FC<SettingsModalProps> = ({
                 </div>
               </div>
 
-              {/* Theme Selection */}
               <div>
                 <label className={`block text-xs font-bold ${theme.textMuted} mb-3 uppercase tracking-wider`}>Theme</label>
                 <div className="grid grid-cols-3 sm:grid-cols-4 gap-2">
@@ -162,7 +166,6 @@ const SettingsModal: React.FC<SettingsModalProps> = ({
                 </div>
               </div>
 
-              {/* High Capacity Mode */}
               <div>
                 <div className="flex items-center justify-between mb-2">
                   <label className={`flex items-center gap-2 text-sm font-medium ${theme.textMain}`}>
@@ -176,7 +179,6 @@ const SettingsModal: React.FC<SettingsModalProps> = ({
                 <p className={`text-xs ${theme.textMuted}`}>Allows processing of larger files (requires supported model).</p>
               </div>
 
-              {/* Streaming Responses */}
               <div>
                 <div className="flex items-center justify-between mb-2">
                   <label className={`flex items-center gap-2 text-sm font-medium ${theme.textMain}`}>
@@ -194,7 +196,7 @@ const SettingsModal: React.FC<SettingsModalProps> = ({
 
           {activeTab === 'models' && (
             <>
-              {/* Existing Models Tab Content */}
+              {/* Models Tab Content */}
               <div>
                 <label className={`block text-xs font-bold ${theme.textMuted} mb-3 uppercase tracking-wider flex items-center gap-2`}>
                   <Database className="w-4 h-4" /> Provider
@@ -212,7 +214,6 @@ const SettingsModal: React.FC<SettingsModalProps> = ({
                 </div>
               </div>
 
-              {/* API Key */}
               <div>
                 <label className={`block text-xs font-bold ${theme.textMuted} mb-2 uppercase tracking-wider flex items-center gap-2`}>
                   <Key className="w-4 h-4" /> Provider API Key
@@ -226,7 +227,6 @@ const SettingsModal: React.FC<SettingsModalProps> = ({
                 />
               </div>
 
-              {/* GitHub Token */}
               <div className="mt-4 pt-4 border-t border-white/5">
                 <label className={`block text-xs font-bold ${theme.textMuted} mb-2 uppercase tracking-wider flex items-center gap-2`}>
                   <Github className="w-4 h-4" /> GitHub Token (Optional)
@@ -241,7 +241,6 @@ const SettingsModal: React.FC<SettingsModalProps> = ({
                 <p className={`text-xs ${theme.textMuted} mt-1`}>Used to clone repositories and (future) commit changes.</p>
               </div>
 
-              {/* Model Assignment */}
               <div className="space-y-4 pt-4 border-t border-white/5">
                 <h3 className={`text-sm font-bold ${theme.textMain} flex items-center gap-2`}>
                   <Cpu className="w-4 h-4" /> Agent Model Assignments
@@ -254,7 +253,6 @@ const SettingsModal: React.FC<SettingsModalProps> = ({
                 </div>
               </div>
 
-              {/* Pipeline Role Assignment */}
               <div className={`p-4 rounded-xl border ${theme.border} bg-white/5 mt-4`}>
                 <h3 className={`text-sm font-bold ${theme.textMain} mb-4 flex items-center gap-2`}>
                   <UserCog className="w-4 h-4" /> Role Definitions
@@ -291,7 +289,7 @@ const SettingsModal: React.FC<SettingsModalProps> = ({
 
           {activeTab === 'roles' && (
             <div className="space-y-4">
-              {/* Existing Roles Tab Content */}
+              {/* Roles Tab Content */}
               <div className="flex justify-between items-center">
                 <p className={`text-sm ${theme.textMuted}`}>Create custom personas for specific tasks.</p>
                 <button onClick={() => setIsAddingRole(true)} className={`px-3 py-1.5 rounded text-xs font-bold ${theme.button} text-white`}>
@@ -346,7 +344,7 @@ const SettingsModal: React.FC<SettingsModalProps> = ({
 
           {activeTab === 'database' && (
             <div className="space-y-6">
-              {/* Database Type Selection */}
+              {/* Database Tab Content - Now Safely using safeDbConfig */}
               <div>
                 <label className={`block text-xs font-bold ${theme.textMuted} mb-3 uppercase tracking-wider flex items-center gap-2`}>
                   <Server className="w-4 h-4" /> Database Type
@@ -356,7 +354,7 @@ const SettingsModal: React.FC<SettingsModalProps> = ({
                     <button
                       key={dbType}
                       onClick={() => updateDatabaseConfig('type', dbType)}
-                      className={`flex-1 capitalize py-3 rounded-lg text-sm font-medium border transition-all flex flex-col items-center gap-2 ${databaseConfig.type === dbType ? `${theme.button} border-transparent text-white` : `bg-white/5 border-transparent ${theme.textMuted} hover:bg-white/10`}`}
+                      className={`flex-1 capitalize py-3 rounded-lg text-sm font-medium border transition-all flex flex-col items-center gap-2 ${safeDbConfig.type === dbType ? `${theme.button} border-transparent text-white` : `bg-white/5 border-transparent ${theme.textMuted} hover:bg-white/10`}`}
                     >
                       <DbIcon className="w-5 h-5" />
                       <span>{dbType === 'indexeddb' ? 'Browser Storage' : 'PostgreSQL'}</span>
@@ -366,7 +364,7 @@ const SettingsModal: React.FC<SettingsModalProps> = ({
               </div>
 
               {/* PostgreSQL Connection Settings */}
-              {databaseConfig.type === 'postgresql' && (
+              {safeDbConfig.type === 'postgresql' && (
                 <div className={`p-4 border ${theme.border} rounded-lg space-y-4 bg-white/5`}>
                   <h3 className={`text-sm font-bold ${theme.textMain} flex items-center gap-2`}>
                     <Link className="w-4 h-4" /> PostgreSQL Connection
@@ -376,7 +374,7 @@ const SettingsModal: React.FC<SettingsModalProps> = ({
                     <label className={`block text-xs ${theme.textMuted} mb-2`}>Connection String</label>
                     <input 
                       type="text"
-                      value={databaseConfig.connectionString || ''}
+                      value={safeDbConfig.connectionString || ''}
                       onChange={(e) => updateDatabaseConfig('connectionString', e.target.value)}
                       placeholder="postgresql://username:password@host:port/database"
                       className={`w-full ${theme.bgApp} border ${theme.border} rounded-lg px-4 py-2 text-sm`}
@@ -391,7 +389,7 @@ const SettingsModal: React.FC<SettingsModalProps> = ({
                       <label className={`block text-xs ${theme.textMuted} mb-2`}>Database Name</label>
                       <input 
                         type="text"
-                        value={databaseConfig.databaseName || ''}
+                        value={safeDbConfig.databaseName || ''}
                         onChange={(e) => updateDatabaseConfig('databaseName', e.target.value)}
                         placeholder="postgres"
                         className={`w-full ${theme.bgApp} border ${theme.border} rounded-lg px-4 py-2 text-sm`}
@@ -401,7 +399,7 @@ const SettingsModal: React.FC<SettingsModalProps> = ({
                       <label className={`block text-xs ${theme.textMuted} mb-2`}>Port</label>
                       <input 
                         type="number"
-                        value={databaseConfig.port || 5432}
+                        value={safeDbConfig.port || 5432}
                         onChange={(e) => updateDatabaseConfig('port', parseInt(e.target.value))}
                         className={`w-full ${theme.bgApp} border ${theme.border} rounded-lg px-4 py-2 text-sm`}
                       />
@@ -413,7 +411,7 @@ const SettingsModal: React.FC<SettingsModalProps> = ({
                       <label className={`block text-xs ${theme.textMuted} mb-2`}>Username</label>
                       <input 
                         type="text"
-                        value={databaseConfig.username || ''}
+                        value={safeDbConfig.username || ''}
                         onChange={(e) => updateDatabaseConfig('username', e.target.value)}
                         placeholder="postgres"
                         className={`w-full ${theme.bgApp} border ${theme.border} rounded-lg px-4 py-2 text-sm`}
@@ -423,7 +421,7 @@ const SettingsModal: React.FC<SettingsModalProps> = ({
                       <label className={`block text-xs ${theme.textMuted} mb-2`}>Password</label>
                       <input 
                         type="password"
-                        value={databaseConfig.password || ''}
+                        value={safeDbConfig.password || ''}
                         onChange={(e) => updateDatabaseConfig('password', e.target.value)}
                         placeholder="••••••••"
                         className={`w-full ${theme.bgApp} border ${theme.border} rounded-lg px-4 py-2 text-sm`}
@@ -482,29 +480,29 @@ const SettingsModal: React.FC<SettingsModalProps> = ({
                 <h3 className={`text-sm font-bold ${theme.textMain} mb-4 flex items-center gap-2`}>
                   <Database className="w-4 h-4" /> Storage Settings
                 </h3>
-                
+
                 <div className="space-y-4">
                   <div className="flex items-center justify-between">
                     <label className={`text-sm ${theme.textMain}`}>Auto Backup</label>
                     <button 
-                      onClick={() => updateDatabaseConfig('backupEnabled', !databaseConfig.backupEnabled)}
-                      className={`w-12 h-6 rounded-full transition-colors relative ${databaseConfig.backupEnabled ? 'bg-green-600' : 'bg-slate-700'}`}
+                      onClick={() => updateDatabaseConfig('backupEnabled', !safeDbConfig.backupEnabled)}
+                      className={`w-12 h-6 rounded-full transition-colors relative ${safeDbConfig.backupEnabled ? 'bg-green-600' : 'bg-slate-700'}`}
                     >
-                      <div className={`w-4 h-4 bg-white rounded-full absolute top-1 transition-transform ${databaseConfig.backupEnabled ? 'left-7' : 'left-1'}`} />
+                      <div className={`w-4 h-4 bg-white rounded-full absolute top-1 transition-transform ${safeDbConfig.backupEnabled ? 'left-7' : 'left-1'}`} />
                     </button>
                   </div>
 
                   <div className="flex items-center justify-between">
                     <label className={`text-sm ${theme.textMain}`}>Data Encryption</label>
                     <button 
-                      onClick={() => updateDatabaseConfig('encryption', !databaseConfig.encryption)}
-                      className={`w-12 h-6 rounded-full transition-colors relative ${databaseConfig.encryption ? 'bg-blue-600' : 'bg-slate-700'}`}
+                      onClick={() => updateDatabaseConfig('encryption', !safeDbConfig.encryption)}
+                      className={`w-12 h-6 rounded-full transition-colors relative ${safeDbConfig.encryption ? 'bg-blue-600' : 'bg-slate-700'}`}
                     >
-                      <div className={`w-4 h-4 bg-white rounded-full absolute top-1 transition-transform ${databaseConfig.encryption ? 'left-7' : 'left-1'}`} />
+                      <div className={`w-4 h-4 bg-white rounded-full absolute top-1 transition-transform ${safeDbConfig.encryption ? 'left-7' : 'left-1'}`} />
                     </button>
                   </div>
 
-                  {databaseConfig.type === 'indexeddb' && (
+                  {safeDbConfig.type === 'indexeddb' && (
                     <div>
                       <label className={`block text-xs ${theme.textMuted} mb-2`}>Storage Quota</label>
                       <div className="flex items-center gap-2">
@@ -513,11 +511,11 @@ const SettingsModal: React.FC<SettingsModalProps> = ({
                           min="50"
                           max="1000"
                           step="50"
-                          value={databaseConfig.maxSize || 500}
+                          value={safeDbConfig.maxSize || 500}
                           onChange={(e) => updateDatabaseConfig('maxSize', parseInt(e.target.value))}
                           className="flex-1"
                         />
-                        <span className={`text-sm ${theme.textMain} w-16`}>{databaseConfig.maxSize}MB</span>
+                        <span className={`text-sm ${theme.textMain} w-16`}>{safeDbConfig.maxSize}MB</span>
                       </div>
                     </div>
                   )}
