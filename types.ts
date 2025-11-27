@@ -1,3 +1,18 @@
+export interface DatabaseConfig {
+  type: 'indexeddb' | 'postgresql' | 'mongodb' | 'supabase';
+  connectionString?: string;
+  databaseName?: string;
+  username?: string;
+  password?: string;
+  host?: string;
+  port?: number;
+  ssl?: boolean;
+  backupEnabled: boolean;
+  encryption: boolean;
+  maxSize: number; // in MB
+  cloudSync?: boolean;
+}
+
 export enum CodeLanguage {
   JAVASCRIPT = 'JavaScript',
   TYPESCRIPT = 'TypeScript',
@@ -216,7 +231,8 @@ export interface LLMConfig {
     coderModelId: string;
     chatModelId: string;
     github?: GitHubConfig;
-    compression?: CompressionConfig; // Added
+    compression?: CompressionConfig;
+    database?: DatabaseConfig; // Optional separate database config
 }
 
 export interface FixRequest {
@@ -232,9 +248,9 @@ export interface FixRequest {
   knowledgeBase: KnowledgeEntry[];
   useInternet: boolean;
   currentTodos: TodoItem[];
-  projectSummary?: ProjectSummary; // Added
-  useCompression?: boolean; // Added
-  contextTransfer?: ContextTransfer; // Added
+  projectSummary?: ProjectSummary;
+  useCompression?: boolean;
+  contextTransfer?: ContextTransfer;
 }
 
 export interface ToolCall {
