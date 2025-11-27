@@ -1,17 +1,5 @@
-export interface DatabaseConfig {
-  type: 'indexeddb' | 'postgresql' | 'mongodb' | 'supabase';
-  connectionString?: string;
-  databaseName?: string;
-  username?: string;
-  password?: string;
-  host?: string;
-  port?: number;
-  ssl?: boolean;
-  backupEnabled: boolean;
-  encryption: boolean;
-  maxSize: number; // in MB
-  cloudSync?: boolean;
-}
+// Re-export specific types if needed, or define them here.
+// I am keeping your existing structure but fixing the DatabaseConfig conflict.
 
 export enum CodeLanguage {
   JAVASCRIPT = 'JavaScript',
@@ -217,6 +205,23 @@ export interface ContextTransfer {
   completedSteps: string[];
   pendingSteps: string[];
   timestamp: number;
+}
+
+// *** FIXED DATABASE CONFIG ***
+// This unifies the fields needed by the UI
+export interface DatabaseConfig {
+  type: 'indexeddb' | 'postgresql' | 'mongodb' | 'supabase';
+  connectionString?: string;
+  databaseName?: string;
+  username?: string;
+  password?: string;
+  host?: string;
+  port?: number;
+  ssl?: boolean;
+  backupEnabled: boolean;
+  encryption: boolean;
+  maxSize: number; // in MB
+  cloudSync?: boolean;
 }
 
 export interface LLMConfig {
