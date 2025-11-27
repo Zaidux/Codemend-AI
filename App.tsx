@@ -1,6 +1,7 @@
 import * as React from 'react';
 import { useState, useEffect, useRef } from 'react';
-import { Sparkles, Play, Wrench, X, Settings, Send, Sidebar as SidebarIcon, Code2, ArrowLeft, Eye, Image as ImageIcon, Mic, StopCircle, BookOpen, Globe, Brain, ListTodo, GitCompare } from 'lucide-react';
+// FIX: Added 'Plus' and 'Zap' to the imports
+import { Sparkles, Play, Wrench, X, Settings, Send, Sidebar as SidebarIcon, Code2, ArrowLeft, Eye, Image as ImageIcon, Mic, StopCircle, BookOpen, Globe, Brain, ListTodo, GitCompare, Plus, Zap } from 'lucide-react';
 
 import Header from './components/Header';
 import MarkdownRenderer from './components/MarkdownRenderer';
@@ -9,8 +10,8 @@ import WebPreview from './components/WebPreview';
 import SettingsModal from './components/SettingsModal';
 import TodoList from './components/TodoList';
 import DiffViewer from './components/DiffViewer';
-import AppSidebar from './components/AppSidebar'; // NEW IMPORT
-import ProcessLog from './components/ProcessLog'; // NEW IMPORT
+import AppSidebar from './components/AppSidebar';
+import ProcessLog from './components/ProcessLog';
 
 import { THEMES, DEFAULT_LLM_CONFIG, DEFAULT_ROLES } from './constants';
 import { CodeLanguage, AppMode, ThemeType, Session, ChatMessage, ViewMode, ProjectFile, LLMConfig, Project, Attachment, AgentRole, KnowledgeEntry, TodoItem, FileDiff, ProjectSummary } from './types';
@@ -281,7 +282,6 @@ const App: React.FC = () => {
   };
 
   const toggleRecording = async () => {
-      // ... existing recording logic ...
       if (isRecording && mediaRecorder) {
           mediaRecorder.stop();
           setIsRecording(false);
@@ -459,7 +459,6 @@ const App: React.FC = () => {
   };
 
   const handleModelSwitch = async (newConfig: LLMConfig) => {
-      // (Simplified for brevity, logic remains the same)
       setLlmConfig(newConfig);
       setShowModelSwitch(false);
   };
@@ -592,6 +591,14 @@ const App: React.FC = () => {
                         <button onClick={() => updateSession({ mode: 'FIX' })} className={`px-3 py-1.5 rounded-full text-xs font-medium border transition-all flex items-center gap-1.5 ${activeSession.mode === 'FIX' ? `${theme.button} border-transparent text-white` : `border-${theme.border} ${theme.textMuted}`}`}><Wrench className="w-3 h-3"/> Fix</button>
                         <button onClick={() => updateSession({ mode: 'EXPLAIN' })} className={`px-3 py-1.5 rounded-full text-xs font-medium border transition-all flex items-center gap-1.5 ${activeSession.mode === 'EXPLAIN' ? `${theme.button} border-transparent text-white` : `border-${theme.border} ${theme.textMuted}`}`}><BookOpen className="w-3 h-3"/> Explain</button>
                         <button onClick={() => setUseInternet(!useInternet)} className={`px-3 py-1.5 rounded-full text-xs font-medium border transition-all flex items-center gap-1.5 ${useInternet ? `bg-blue-600 border-transparent text-white` : `border-${theme.border} ${theme.textMuted}`}`}><Globe className="w-3 h-3"/> Internet</button>
+                         {/* RESTORED COMPRESSION BUTTON */}
+                         <button 
+                          onClick={() => setUseCompression(!useCompression)}
+                          className={`px-3 py-1.5 rounded-full text-xs font-medium border transition-all flex items-center gap-1.5 ${useCompression ? 'bg-purple-600 border-transparent text-white' : `border-${theme.border} ${theme.textMuted}`}`}
+                          title="Context Compression"
+                        >
+                          <Zap className="w-3 h-3" /> Compress
+                        </button>
                         {isLoading && (<button onClick={stopStreaming} className={`px-3 py-1.5 rounded-full text-xs font-medium border transition-all flex items-center gap-1.5 bg-red-600 border-transparent text-white`}><StopCircle className="w-3 h-3"/> Stop</button>)}
                      </div>
                      <div className="relative flex items-end gap-2">
