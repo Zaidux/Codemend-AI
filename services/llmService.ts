@@ -109,7 +109,7 @@ export const fixCodeWithGemini = async (request: FixRequest): Promise<FixRespons
     roles, knowledgeBase, useInternet, currentTodos, projectSummary, useCompression, contextTransfer 
   } = request;
 
-  // ... (Validation logic stays the same) ...
+  // Validate critical inputs
   if (!llmConfig) return { response: "", error: "Missing LLM configuration" };
   if (!currentMessage?.trim()) return { response: "", error: "Empty message" };
 
@@ -142,7 +142,6 @@ export const fixCodeWithGemini = async (request: FixRequest): Promise<FixRespons
   let fileContext = "";
   let usedCompression = false;
 
-  // ... (Context building logic stays the same) ...
   if (shouldCompress && projectSummary) {
     usedCompression = true;
     const compressionConfig = llmConfig.compression || { enabled: true, maxFiles: 15, maxFileSize: 50000, autoSummarize: true, preserveStructure: true };
@@ -233,7 +232,7 @@ Do not just say "I will create the file". CALL THE FUNCTION 'create_file' or 'up
   }
 };
 
-// --- STREAMING ORCHESTRATOR (FIXED) ---
+// --- STREAMING ORCHESTRATOR ---
 export const streamFixCodeWithGemini = async (
   request: FixRequest,
   callbacks: StreamingCallbacks,
@@ -272,7 +271,7 @@ export const streamFixCodeWithGemini = async (
   }
 
   try {
-    // 2. Context Building (Condensed for brevity)
+    // 2. Context Building
     let fileContext = "";
     if (useCompression && projectSummary) {
       fileContext = `CONTEXT:\n${projectSummary.summary}\nACTIVE:\n${safeActiveFile.content}`;
@@ -301,7 +300,7 @@ export const streamFixCodeWithGemini = async (
     // --- ACCUMULATE TOOL CALLS ---
     let accumulatedToolCalls: Record<number, { name: string, args: string, id: string }> = {};
 
-    // *** FIX: Capture the full text returned by the stream ***
+    // Execute stream and capture the full text response
     const fullTextResponse = await callOpenAICompatibleStream(
       baseUrl, 
       apiKey, 
@@ -383,7 +382,7 @@ export const streamFixCodeWithGemini = async (
       callbacks.onContent(`\n\n[SUCCESS] I have prepared ${proposedChanges.length} file changes. Please review and apply them.`);
     }
 
-    // *** FIX: Pass the captured fullTextResponse instead of empty string ***
+    // Pass the full text response to completion callback
     callbacks.onComplete(fullTextResponse || "");
 
   } catch (error: any) {
