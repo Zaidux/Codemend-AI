@@ -120,6 +120,7 @@ export interface ChatMessage {
   content: string;
   timestamp: number;
   attachments?: Attachment[];
+  isEdited?: boolean; // Added for edit functionality
 }
 
 export interface Session {
