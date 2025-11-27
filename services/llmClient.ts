@@ -186,6 +186,7 @@ export const callOpenAICompatibleStream = async (
       reader.releaseLock();
     }
 
+    // Ensure we return the full content
     return fullContent;
   } catch (error: any) {
     if (error.name === 'AbortError') throw error;
