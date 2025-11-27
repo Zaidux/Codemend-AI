@@ -192,7 +192,6 @@ Do not just say "I will create the file". CALL THE FUNCTION 'create_file' or 'up
           toolCalls.push(toolCall);
 
           if (toolCall.name === 'update_file') {
-             // Validate file exists before update
              const existing = safeAllFiles.find(f => f.name === toolCall.args.name);
              if(existing) {
                 proposedChanges.push({ id: generateUUID(), fileName: toolCall.args.name, originalContent: existing.content, newContent: toolCall.args.content, type: 'update' });
@@ -342,10 +341,8 @@ export const streamFixCodeWithGemini = async (
         if (!tc.name) return;
         const args = tc.args ? JSON.parse(tc.args) : {};
 
-        // Push to tool calls list (for UI display)
         finalToolCalls.push({ id: tc.id || generateUUID(), name: tc.name, args });
 
-        // Logic to Generate FileDiffs
         if (tc.name === 'create_file') {
           proposedChanges.push({
             id: generateUUID(),
@@ -372,7 +369,6 @@ export const streamFixCodeWithGemini = async (
       }
     });
 
-    // 4. Trigger Callbacks
     if (finalToolCalls.length > 0 && callbacks.onToolCalls) {
       callbacks.onToolCalls(finalToolCalls);
     }
@@ -382,7 +378,6 @@ export const streamFixCodeWithGemini = async (
       callbacks.onContent(`\n\n[SUCCESS] I have prepared ${proposedChanges.length} file changes. Please review and apply them.`);
     }
 
-    // Pass the full text response to completion callback
     callbacks.onComplete(fullTextResponse || "");
 
   } catch (error: any) {
