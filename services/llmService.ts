@@ -97,6 +97,7 @@ interface StreamingCallbacks {
   onContent: (content: string) => void;
   onToolCalls?: (toolCalls: ToolCall[]) => void;
   onProposedChanges?: (changes: FileDiff[]) => void;
+  onStatusUpdate?: (status: string) => void; // <--- ADDED THIS
   onComplete: (fullResponse: string) => void;
   onError: (error: string) => void;
 }
@@ -137,7 +138,7 @@ export const fixCodeWithGemini = async (request: FixRequest): Promise<FixRespons
   // Calculate Context and Compression
   const totalChars = safeAllFiles.reduce((acc, f) => acc + (f.content?.length || 0), 0);
   const shouldCompress = useCompression || (totalChars > LAZY_LOAD_THRESHOLD && !request.useHighCapacity);
-  
+
   let fileContext = "";
   let usedCompression = false;
 
@@ -155,10 +156,10 @@ export const fixCodeWithGemini = async (request: FixRequest): Promise<FixRespons
   const relevantKnowledge = (knowledgeBase || []).filter(entry => 
     entry && entry.tags && (entry.tags.some(tag => tagsInMessage.includes(tag)) || entry.tags.includes('#global'))
   );
-  
+
   const knowledgeContext = relevantKnowledge.length > 0 ? `\nRELEVANT KNOWLEDGE:\n${relevantKnowledge.map(k => `- ${k.content}`).join('\n')}` : "";
   const coderRole = (roles || []).find(r => r.id === llmConfig.coderRoleId) || (roles || [])[1];
-  
+
   // EXECUTION STEP
   let activeAgentModel = llmConfig.chatModelId || llmConfig.coderModelId || llmConfig.activeModelId;
   if (!activeAgentModel) return { response: "", error: "No active model configured." };
@@ -218,7 +219,7 @@ Do not just say "I will create the file". CALL THE FUNCTION 'create_file' or 'up
     } else {
       const messages = [{ role: 'system', content: systemInstruction }, ...safeHistory.slice(-4).map(h => ({ role: h.role === 'model' ? 'assistant' : 'user', content: h.content })), { role: 'user', content: currentMessage }];
       const res = await callOpenAICompatible(baseUrl, apiKey, activeAgentModel, messages, true, (isLocal ? getLocalProviderConfig('custom', baseUrl).customHeaders : {}));
-      
+
       responseText = (res.choices?.[0]?.message?.content || "") + responseText;
       const tools = res.choices?.[0]?.message?.tool_calls;
       if (tools) {
@@ -309,7 +310,7 @@ export const streamFixCodeWithGemini = async (
       true, // Tools enabled
       (isLocal ? getLocalProviderConfig('custom', baseUrl).customHeaders : {}),
       callbacks.onContent,
-      // Handle Tool Call Chunks
+      // Handle Tool Call Chunks - WITH STATUS UPDATES
       (toolCallChunks) => {
         toolCallChunks.forEach((chunk) => {
           const index = chunk.index;
@@ -319,6 +320,15 @@ export const streamFixCodeWithGemini = async (
           if (chunk.id) accumulatedToolCalls[index].id = chunk.id;
           if (chunk.function?.name) accumulatedToolCalls[index].name += chunk.function.name;
           if (chunk.function?.arguments) accumulatedToolCalls[index].args += chunk.function.arguments;
+
+          // ADDED: Detect intent and emit status updates
+          if (chunk.function?.name && callbacks.onStatusUpdate) {
+            const toolName = chunk.function.name;
+            if (toolName === 'search_files') callbacks.onStatusUpdate("🔍 Searching project files...");
+            if (toolName === 'create_file') callbacks.onStatusUpdate("📝 Creating new file...");
+            if (toolName === 'update_file') callbacks.onStatusUpdate("🔨 Applying fixes to file...");
+            if (toolName === 'read_file') callbacks.onStatusUpdate("📖 Reading file content...");
+          }
         });
       },
       signal
@@ -332,7 +342,7 @@ export const streamFixCodeWithGemini = async (
       try {
         if (!tc.name) return;
         const args = tc.args ? JSON.parse(tc.args) : {};
-        
+
         // Push to tool calls list (for UI display)
         finalToolCalls.push({ id: tc.id || generateUUID(), name: tc.name, args });
 
@@ -367,7 +377,7 @@ export const streamFixCodeWithGemini = async (
     if (finalToolCalls.length > 0 && callbacks.onToolCalls) {
       callbacks.onToolCalls(finalToolCalls);
     }
-    
+
     if (proposedChanges.length > 0 && callbacks.onProposedChanges) {
       callbacks.onProposedChanges(proposedChanges);
       callbacks.onContent(`\n\n[SUCCESS] I have prepared ${proposedChanges.length} file changes. Please review and apply them.`);
