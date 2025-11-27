@@ -1,7 +1,6 @@
 import * as React from 'react';
 import { useState, useEffect, useRef } from 'react';
-// FIX: Added 'Plus' and 'Zap' to the imports
-import { Sparkles, Play, Wrench, X, Settings, Send, Sidebar as SidebarIcon, Code2, ArrowLeft, Eye, Image as ImageIcon, Mic, StopCircle, BookOpen, Globe, Brain, ListTodo, GitCompare, Plus, Zap } from 'lucide-react';
+import { Sparkles, Play, Wrench, X, Settings, Send, Sidebar as SidebarIcon, Code2, ArrowLeft, Eye, Image as ImageIcon, Mic, StopCircle, BookOpen, Globe, Brain, ListTodo, GitCompare, Plus, Zap, RefreshCw, Pencil } from 'lucide-react';
 
 import Header from './components/Header';
 import MarkdownRenderer from './components/MarkdownRenderer';
@@ -207,7 +206,6 @@ const App: React.FC = () => {
       if (diff.type === 'create') {
           const newFile = createNewFile(diff.fileName);
           newFile.content = diff.newContent;
-          // Simple heuristic for language
           if (diff.fileName.endsWith('.css')) newFile.language = CodeLanguage.CSS;
           if (diff.fileName.endsWith('.html')) newFile.language = CodeLanguage.HTML;
           if (diff.fileName.endsWith('.py')) newFile.language = CodeLanguage.PYTHON;
@@ -340,10 +338,13 @@ const App: React.FC = () => {
 
     setInputInstruction('');
     setAttachments([]);
+    triggerAIResponse(newMessages);
+  };
+
+  // New function to handle both new messages and retries
+  const triggerAIResponse = async (history: ChatMessage[]) => {
     setIsLoading(true);
     setError(null);
-    
-    // Reset Process Log
     setProcessSteps([]);
     setIsProcessComplete(false);
 
@@ -353,19 +354,19 @@ const App: React.FC = () => {
     setStreamingContent('');
 
     if (useStreaming && llmConfig.provider !== 'gemini') {
-      await handleStreamingResponse(newMessages, streamingMsgId);
+      await handleStreamingResponse(history, streamingMsgId);
     } else {
-      await handleRegularResponse(newMessages, streamingMsgId);
+      await handleRegularResponse(history, streamingMsgId);
     }
   };
 
-  const handleRegularResponse = async (newMessages: ChatMessage[], streamingMsgId: string) => {
+  const handleRegularResponse = async (history: ChatMessage[], streamingMsgId: string) => {
     setProcessSteps(['Sending request to AI...', 'Waiting for response...']);
     try {
       const response = await fixCodeWithGemini({
-        activeFile, allFiles: activeProject.files, history: newMessages,
-        currentMessage: newMessages[newMessages.length - 1].content,
-        attachments: newMessages[newMessages.length - 1].attachments,
+        activeFile, allFiles: activeProject.files, history: history,
+        currentMessage: history[history.length - 1].content,
+        attachments: history[history.length - 1].attachments,
         mode: activeSession.mode, useHighCapacity: highCapacity, llmConfig,
         roles, knowledgeBase, useInternet, currentTodos: todoList,
         projectSummary: projectSummaries[activeProject.id], useCompression
@@ -373,10 +374,9 @@ const App: React.FC = () => {
 
       if (response.error) { setError(response.error); return; }
 
-      // Fake the process steps for non-streaming
       setProcessSteps(prev => [...prev, 'Analyzing response...', 'Process complete.']);
       setIsProcessComplete(true);
-      processAIResponse(response, newMessages);
+      processAIResponse(response, history);
     } catch (error: any) {
       setError(error.message);
     } finally {
@@ -386,22 +386,21 @@ const App: React.FC = () => {
     }
   };
 
-  const handleStreamingResponse = async (newMessages: ChatMessage[], streamingMsgId: string) => {
+  const handleStreamingResponse = async (history: ChatMessage[], streamingMsgId: string) => {
     abortControllerRef.current = new AbortController();
     setProcessSteps(['Analyzing request...']);
 
     try {
       await streamFixCodeWithGemini({
-        activeFile, allFiles: activeProject.files, history: newMessages,
-        currentMessage: newMessages[newMessages.length - 1].content,
-        attachments: newMessages[newMessages.length - 1].attachments,
+        activeFile, allFiles: activeProject.files, history: history,
+        currentMessage: history[history.length - 1].content,
+        attachments: history[history.length - 1].attachments,
         mode: activeSession.mode, useHighCapacity: highCapacity, llmConfig,
         roles, knowledgeBase, useInternet, currentTodos: todoList,
         projectSummary: projectSummaries[activeProject.id], useCompression
       }, {
         onContent: (content) => setStreamingContent(prev => prev + content),
         onStatusUpdate: (status) => {
-            // Avoid duplicate consecutive logs
             setProcessSteps(prev => {
                 if (prev[prev.length - 1] === status) return prev;
                 return [...prev, status];
@@ -414,7 +413,7 @@ const App: React.FC = () => {
           const aiMsg: ChatMessage = {
             id: streamingMsgId, role: 'model', content: fullResponse, timestamp: Date.now()
           };
-          updateSession({ messages: [...newMessages, aiMsg] });
+          updateSession({ messages: [...history, aiMsg] });
         },
         onError: (error) => setError(error)
       }, abortControllerRef.current.signal);
@@ -451,16 +450,46 @@ const App: React.FC = () => {
     }
   };
 
-  const processAIResponse = (response: any, newMessages: ChatMessage[]) => {
+  const processAIResponse = (response: any, history: ChatMessage[]) => {
     if (response.toolCalls) processToolCalls(response.toolCalls);
     if (response.proposedChanges) setPendingDiffs(prev => [...prev, ...response.proposedChanges!]);
     const aiMsg: ChatMessage = { id: crypto.randomUUID(), role: 'model', content: response.response, timestamp: Date.now() };
-    updateSession({ messages: [...newMessages, aiMsg] });
+    updateSession({ messages: [...history, aiMsg] });
   };
 
   const handleModelSwitch = async (newConfig: LLMConfig) => {
       setLlmConfig(newConfig);
       setShowModelSwitch(false);
+  };
+
+  // --- EDIT & RETRY LOGIC ---
+  const handleEditMessage = (msgId: string, newContent: string) => {
+    const msgIndex = activeSession.messages.findIndex(m => m.id === msgId);
+    if (msgIndex === -1) return;
+
+    // Create a new history up to the edited message
+    const newHistory = activeSession.messages.slice(0, msgIndex);
+    const editedMsg = { ...activeSession.messages[msgIndex], content: newContent, isEdited: true };
+    newHistory.push(editedMsg);
+
+    // Update session immediately with the edit (removing subsequent messages)
+    updateSession({ messages: newHistory });
+    
+    // Retrigger AI with the new history
+    triggerAIResponse(newHistory);
+  };
+
+  const handleRetry = () => {
+    const lastMsg = activeSession.messages[activeSession.messages.length - 1];
+    if (lastMsg.role === 'user') {
+        // If last was user, just trigger response
+        triggerAIResponse(activeSession.messages);
+    } else if (lastMsg.role === 'model') {
+        // If last was model, remove it and re-trigger based on the user msg before it
+        const newHistory = activeSession.messages.slice(0, -1);
+        updateSession({ messages: newHistory });
+        triggerAIResponse(newHistory);
+    }
   };
 
   // --- RENDER ---
@@ -541,16 +570,35 @@ const App: React.FC = () => {
                         <p>Start a conversation, ask for fixes, or create new features.</p>
                     </div>
                 )}
-                {activeSession.messages.map((msg) => (
-                    <div key={msg.id} className={`flex flex-col ${msg.role === 'user' ? 'items-end' : 'items-start'}`}>
+                {activeSession.messages.map((msg, idx) => (
+                    <div key={msg.id} className={`flex flex-col ${msg.role === 'user' ? 'items-end' : 'items-start'} group relative`}>
                         <div className={`max-w-[90%] lg:max-w-[85%] rounded-2xl px-5 py-4 shadow-sm ${msg.role === 'user' ? `${theme.accentBg} border border-${theme.accent}/20 rounded-tr-none` : `${theme.bgPanel} border ${theme.border} rounded-tl-none`}`}>
                             {msg.role === 'user' ? (
-                                <div className="space-y-2">
+                                <div className="space-y-2 relative group">
                                     {msg.attachments?.map((att, i) => (<div key={i} className="mb-2 rounded overflow-hidden border border-white/10">{att.type === 'image' ? <img src={`data:${att.mimeType};base64,${att.content}`} className="max-h-48 object-cover" /> : <div className="p-2 flex items-center gap-2 bg-white/5"><Mic className="w-4 h-4"/> Audio Clip</div>}</div>))}
                                     <p className={`whitespace-pre-wrap text-sm ${theme.textMain}`}>{msg.content}</p>
+                                    {msg.isEdited && <span className="text-[10px] opacity-60 absolute bottom-0 right-0 -mb-4">edited</span>}
+                                    <button 
+                                      onClick={() => {
+                                        const newText = prompt("Edit your message:", msg.content);
+                                        if (newText && newText !== msg.content) handleEditMessage(msg.id, newText);
+                                      }}
+                                      className="absolute -left-8 top-1 opacity-0 group-hover:opacity-100 p-1 hover:bg-white/10 rounded text-slate-400 hover:text-white"
+                                    >
+                                      <Pencil className="w-3 h-3" />
+                                    </button>
                                 </div>
                             ) : (<MarkdownRenderer content={msg.content} theme={theme} />)}
                         </div>
+                        
+                        {/* Retry Button for the last AI message */}
+                        {msg.role === 'model' && idx === activeSession.messages.length - 1 && !isLoading && (
+                          <div className="mt-1 flex gap-2">
+                             <button onClick={handleRetry} className="text-[10px] flex items-center gap-1 opacity-50 hover:opacity-100 hover:text-white transition-opacity">
+                                <RefreshCw className="w-3 h-3" /> Retry
+                             </button>
+                          </div>
+                        )}
                     </div>
                 ))}
 
@@ -566,7 +614,12 @@ const App: React.FC = () => {
                     </div>
                 )}
 
-                {error && <div className="w-full flex justify-center"><div className="bg-red-500/10 text-red-400 px-4 py-2 rounded-lg text-sm border border-red-500/20">{error}</div></div>}
+                {error && (
+                  <div className="w-full flex flex-col items-center gap-2">
+                    <div className="bg-red-500/10 text-red-400 px-4 py-2 rounded-lg text-sm border border-red-500/20">{error}</div>
+                    <button onClick={handleRetry} className={`text-xs flex items-center gap-1 ${theme.textMain} hover:underline`}><RefreshCw className="w-3 h-3"/> Retry Request</button>
+                  </div>
+                )}
              </div>
 
              {/* PENDING DIFFS OVERLAY */}
