@@ -1,13 +1,13 @@
 import { FixRequest, FixResponse, ToolCall, LLMConfig, Attachment, KnowledgeEntry, FileDiff, ProjectFile, SearchResult } from '../types';
-
-// Import new services
 import { contextService } from './contextService';
 import { callGemini, callOpenAICompatible, callOpenAICompatibleStream } from './llmClient';
-import { GEMINI_TOOL_DEFINITIONS } from './llmTools';
+import { ToolUsageLogger, KnowledgeManager } from './llmTools';
 
 // --- HELPERS ---
 const estimateTokens = (text: string) => Math.ceil(text.length / 4);
 const LAZY_LOAD_THRESHOLD = 30000;
+const MAX_AGENT_TURNS = 5; // Prevent infinite loops
+const PROTECTED_FILES = ['.env', '.git', 'package-lock.json', 'yarn.lock', 'pnpm-lock.yaml', '.DS_Store'];
 
 // Generate UUID for tool calls and changes
 const generateUUID = (): string => {
@@ -16,6 +16,26 @@ const generateUUID = (): string => {
     const v = c == 'x' ? r : (r & 0x3 | 0x8);
     return v.toString(16);
   });
+};
+
+// Security Check
+const isFileProtected = (fileName: string): boolean => {
+  return PROTECTED_FILES.some(protectedStr => fileName.includes(protectedStr));
+};
+
+// Robust JSON Parser for Local Models
+const safeJsonParse = (jsonStr: string): any => {
+  try {
+    return JSON.parse(jsonStr);
+  } catch (e) {
+    // Attempt simple fix for common local model errors (trailing commas)
+    try {
+      const fixed = jsonStr.replace(/,\s*}/g, '}').replace(/,\s*]/g, ']');
+      return JSON.parse(fixed);
+    } catch (e2) {
+      throw new Error(`Invalid JSON format: ${jsonStr.substring(0, 50)}...`);
+    }
+  }
 };
 
 // --- LOCAL MODEL SUPPORT ---
@@ -89,7 +109,7 @@ const performSearch = (query: string, files: ProjectFile[]): SearchResult[] => {
       }
     });
   });
-  return results.slice(0, 20); // Limit results
+  return results.slice(0, 20);
 };
 
 // --- STREAMING INTERFACE ---
@@ -102,12 +122,74 @@ interface StreamingCallbacks {
   onError: (error: string) => void;
 }
 
+// --- ENHANCED PROMPT ENGINEERING WITH KNOWLEDGE INTEGRATION ---
+const buildSystemPrompt = (
+  mode: string,
+  fileContext: string,
+  knowledgeContext: string,
+  currentMessage: string,
+  coderRole: any,
+  hasTools: boolean,
+  knowledgeManager: KnowledgeManager
+): string => {
+  const toolInstructions = hasTools ? `
+CRITICAL TOOL USAGE RULES:
+1. When user asks to CREATE a file → IMMEDIATELY call create_file tool
+2. When user asks to MODIFY/UPDATE/FIX code → IMMEDIATELY call update_file tool  
+3. When user asks to SEARCH code → call search_files tool
+4. When you need to READ a specific file → call read_file tool
+5. When user teaches you something NEW or you discover useful patterns → call save_knowledge tool
+6. NEVER describe what you will do - EXECUTE the tools directly
+7. If tool fails, try again with corrected parameters
+
+AVAILABLE TOOLS: create_file, update_file, search_files, read_file, save_knowledge, manage_tasks
+
+KNOWLEDGE SAVING GUIDELINES:
+- Save user preferences (coding style, architecture choices, tool preferences)
+- Save project-specific patterns and conventions
+- Save learned concepts and best practices
+- Save technical decisions and their reasoning
+- Use #global tag for cross-project knowledge
+- Use #project tag for current project specifics
+- Use #user tag for personal preferences
+` : '';
+
+  return `
+${coderRole?.systemPrompt || 'You are an expert AI coding assistant that learns and remembers across sessions.'}
+
+MODE: ${mode === 'FIX' ? 'Execute code changes and fixes' : 'Explain and answer questions'}
+${fileContext}
+${knowledgeContext}
+
+USER REQUEST: ${currentMessage}
+
+${toolInstructions}
+
+RESPONSE GUIDELINES:
+- Be direct and action-oriented
+- If changes are needed, USE THE TOOLS immediately
+- Save important learnings using save_knowledge tool
+- Reference previous knowledge when relevant
+- Provide clear explanations only after executing actions
+- When fixing code, show the complete fixed file content
+- If unsure, ask clarifying questions
+`;
+};
+
 // --- ORCHESTRATOR ---
 export const fixCodeWithGemini = async (request: FixRequest): Promise<FixResponse> => {
   const { 
     llmConfig, history, currentMessage, allFiles, activeFile, mode, attachments, 
     roles, knowledgeBase, useInternet, currentTodos, projectSummary, useCompression, contextTransfer 
   } = request;
+
+  const logger = ToolUsageLogger.getInstance();
+  const knowledgeManager = KnowledgeManager.getInstance();
+  
+  // Load existing knowledge
+  if (knowledgeBase) {
+    knowledgeManager.loadKnowledge(knowledgeBase);
+  }
 
   // Validate critical inputs
   if (!llmConfig) return { response: "", error: "Missing LLM configuration" };
@@ -146,92 +228,241 @@ export const fixCodeWithGemini = async (request: FixRequest): Promise<FixRespons
     usedCompression = true;
     const compressionConfig = llmConfig.compression || { enabled: true, maxFiles: 15, maxFileSize: 50000, autoSummarize: true, preserveStructure: true };
     const relevantFiles = contextService.filterRelevantFiles(safeAllFiles, currentMessage, safeActiveFile, compressionConfig);
-    fileContext = `COMPRESSED PROJECT CONTEXT:\n${projectSummary.summary || 'No summary available'}\n\nKEY FILES:\n${relevantFiles.map(f => `- ${f.name}`).join('\n')}\n\nACTIVE FILE:\n${safeActiveFile.content}`;
+    fileContext = `PROJECT CONTEXT:\n${projectSummary.summary || 'No summary available'}\n\nKEY FILES:\n${relevantFiles.map(f => `- ${f.name}`).join('\n')}\n\nACTIVE FILE (${safeActiveFile.name}):\n\`\`\`${safeActiveFile.language}\n${safeActiveFile.content}\n\`\`\``;
   } else {
-    fileContext = safeAllFiles.map(f => `File: ${f.name} (${f.language})\n\`\`\`${f.language}\n${f.content}\n\`\`\``).join('\n\n');
+    fileContext = `ALL PROJECT FILES:\n${safeAllFiles.map(f => `File: ${f.name} (${f.language})\n\`\`\`${f.language}\n${f.content}\n\`\`\``).join('\n\n')}`;
   }
 
+  // --- IMPROVED KNOWLEDGE RETRIEVAL ---
+  // Matches tags (e.g. #style) OR simple keywords matching existing tags
+  const messageTokens = currentMessage.toLowerCase().split(/[\s,.]+/);
   const tagsInMessage: string[] = currentMessage.match(/#[\w-]+/g) || [];
-  const relevantKnowledge = (knowledgeBase || []).filter(entry => 
-    entry && entry.tags && (entry.tags.some(tag => tagsInMessage.includes(tag)) || entry.tags.includes('#global'))
-  );
+  
+  const relevantKnowledge = (knowledgeBase || []).filter(entry => {
+    if (!entry.tags) return false;
+    // 1. Check Explicit Tags in message
+    if (entry.tags.some(tag => tagsInMessage.includes(tag))) return true;
+    // 2. Check Global
+    if (entry.tags.includes('#global')) return true;
+    // 3. Check Keyword Match (Fuzzy)
+    // If the entry tag is "#react-query", and user said "react query", it's a match.
+    return entry.tags.some(tag => {
+      const bareTag = tag.replace('#', '').toLowerCase();
+      return messageTokens.includes(bareTag) || bareTag.split('-').every(part => messageTokens.includes(part));
+    });
+  });
 
-  const knowledgeContext = relevantKnowledge.length > 0 ? `\nRELEVANT KNOWLEDGE:\n${relevantKnowledge.map(k => `- ${k.content}`).join('\n')}` : "";
+  const knowledgeContext = relevantKnowledge.length > 0 ? 
+    `\nRELEVANT KNOWLEDGE/PREFERENCES:\n${relevantKnowledge.map(k => `- ${k.content} [${k.tags.join(', ')}]`).join('\n')}` : "";
+  
   const coderRole = (roles || []).find(r => r.id === llmConfig.coderRoleId) || (roles || [])[1];
 
   // EXECUTION STEP
   let activeAgentModel = llmConfig.chatModelId || llmConfig.coderModelId || llmConfig.activeModelId;
   if (!activeAgentModel) return { response: "", error: "No active model configured." };
 
-  let systemInstruction = `
-${coderRole?.systemPrompt || 'You are a helpful AI assistant.'}
-Task: ${mode === 'FIX' ? 'Execute the plan and apply fixes.' : 'Explain/Answer.'}
-${fileContext}
-${knowledgeContext}
+  const systemInstruction = buildSystemPrompt(
+    mode, 
+    fileContext, 
+    knowledgeContext, 
+    currentMessage, 
+    coderRole, 
+    true, // Always enable tools for execution
+    knowledgeManager
+  );
 
-USER REQUEST: ${currentMessage}
+  // --- AGENT LOOP INITIALIZATION ---
+  let finalResponseText = "";
+  const allProposedChanges: FileDiff[] = [];
+  const allToolCalls: ToolCall[] = [];
+  
+  // Prepare Conversation History for Loop
+  let conversationMessages: any[] = [];
+  
+  if (isGemini) {
+    // Gemini uses a specific parts structure, simplified here for the loop concept
+    // Note: Complex Gemini loops often require managing the 'history' object directly via SDK
+    // For this implementation, we will stick to a simpler single-pass for Gemini 
+    // or simulate history if the 'callGemini' supports passing accumulated turns.
+    // Assuming callGemini takes `parts` representing the FULL conversation.
+    conversationMessages = [
+        { text: systemInstruction },
+        ...safeHistory.slice(-4).map(msg => ({ text: `${msg.role === 'user' ? 'USER' : 'ASSISTANT'}: ${msg.content}` })),
+        { text: `USER: ${currentMessage}` }
+    ];
+  } else {
+    conversationMessages = [
+      { role: 'system', content: systemInstruction }, 
+      ...safeHistory.slice(-4).map(h => ({ 
+        role: h.role === 'model' ? 'assistant' : 'user', 
+        content: h.content 
+      })), 
+      { role: 'user', content: currentMessage }
+    ];
+  }
 
-IMPORTANT: If you need to create or update files, YOU MUST USE THE PROVIDED TOOLS. 
-Do not just say "I will create the file". CALL THE FUNCTION 'create_file' or 'update_file'.
-`;
+  let turnCount = 0;
+  let keepGoing = true;
 
   try {
-    let responseText = "";
-    let toolCalls: ToolCall[] = [];
-    const proposedChanges: FileDiff[] = [];
+    // --- START AGENT LOOP ---
+    while (keepGoing && turnCount < MAX_AGENT_TURNS) {
+      turnCount++;
+      let currentResponseText = "";
+      let currentToolCalls: any[] = [];
 
-    const processToolCalls = (rawCalls: any[]) => {
-      rawCalls.forEach((fc: any) => {
+      // 1. CALL LLM
+      if (isGemini) {
+        const res = await callGemini(activeAgentModel, conversationMessages, apiKey, true, useInternet);
+        currentResponseText = res.text || "";
+        if (res.functionCalls) currentToolCalls = res.functionCalls;
+      } else {
+        const res = await callOpenAICompatible(
+          baseUrl, apiKey, activeAgentModel, conversationMessages, true, 
+          (isLocal ? getLocalProviderConfig('custom', baseUrl).customHeaders : {})
+        );
+        const message = res.choices?.[0]?.message;
+        currentResponseText = message?.content || "";
+        if (message?.tool_calls) {
+          currentToolCalls = message.tool_calls.map((tc: any) => ({
+            name: tc.function.name,
+            args: tc.function.arguments
+          }));
+        }
+      }
+
+      finalResponseText += currentResponseText;
+
+      // If no tools, we are done
+      if (currentToolCalls.length === 0) {
+        keepGoing = false;
+        break;
+      }
+
+      // Add Assistant Response to History (so it knows what it asked for)
+      if (isGemini) {
+        conversationMessages.push({ text: `ASSISTANT: ${currentResponseText}` });
+      } else {
+        conversationMessages.push({ role: 'assistant', content: currentResponseText }); // Add content even if empty (for OpenAI)
+        // Note: In strict OpenAI, you'd add tool_calls field here. 
+        // We are using a generic message structure that works for most locals.
+      }
+
+      // 2. EXECUTE TOOLS & GENERATE FEEDBACK
+      for (const fc of currentToolCalls) {
+        let toolOutput = "";
         try {
-          const args = typeof fc.args === 'string' ? JSON.parse(fc.args) : (fc.args || {});
+          const args = typeof fc.args === 'string' ? safeJsonParse(fc.args) : (fc.args || {});
+          
           const toolCall: ToolCall = {
             id: 'call_' + Math.random().toString(36).substr(2, 9),
             name: fc.name,
             args: args
           };
-          toolCalls.push(toolCall);
+          allToolCalls.push(toolCall);
 
+          // --- TOOL LOGIC ---
           if (toolCall.name === 'update_file') {
-             const existing = safeAllFiles.find(f => f.name === toolCall.args.name);
-             if(existing) {
-                proposedChanges.push({ id: generateUUID(), fileName: toolCall.args.name, originalContent: existing.content, newContent: toolCall.args.content, type: 'update' });
+             if (isFileProtected(toolCall.args.name)) {
+                 toolOutput = `Error: Cannot modify protected file "${toolCall.args.name}" for security reasons.`;
+                 logger.logToolCall('update_file', false, `Blocked write to ${toolCall.args.name}`);
+             } else {
+                const existing = safeAllFiles.find(f => f.name === toolCall.args.name);
+                if (existing) {
+                  allProposedChanges.push({ 
+                    id: generateUUID(), 
+                    fileName: toolCall.args.name, 
+                    originalContent: existing.content, 
+                    newContent: toolCall.args.content, 
+                    type: 'update' 
+                  });
+                  toolOutput = `Success: Prepared update for ${toolCall.args.name}.`;
+                  logger.logToolCall('update_file', true, `Updated ${toolCall.args.name}`);
+                } else {
+                  toolOutput = `Error: File "${toolCall.args.name}" not found. Please use create_file or check the name.`;
+                  logger.logToolCall('update_file', false, `File not found: ${toolCall.args.name}`);
+                }
              }
+
           } else if (toolCall.name === 'create_file') {
-            proposedChanges.push({ id: generateUUID(), fileName: toolCall.args.name, originalContent: '', newContent: toolCall.args.content, type: 'create' });
+             if (isFileProtected(toolCall.args.name)) {
+                toolOutput = `Error: Cannot create protected file "${toolCall.args.name}".`;
+             } else {
+                allProposedChanges.push({ 
+                  id: generateUUID(), 
+                  fileName: toolCall.args.name, 
+                  originalContent: '', 
+                  newContent: toolCall.args.content, 
+                  type: 'create' 
+                });
+                toolOutput = `Success: Prepared creation of ${toolCall.args.name}.`;
+                logger.logToolCall('create_file', true, `Created ${toolCall.args.name}`);
+             }
+
           } else if (toolCall.name === 'search_files') {
             const results = performSearch(toolCall.args.query, safeAllFiles);
-            responseText += `\n\nSearch Results: ${results.length} found.`;
+            toolOutput = `Search Results for "${toolCall.args.query}":\n${results.map(r => `- ${r.fileName}:${r.line} ${r.content}`).join('\n')}`;
+            if (results.length === 0) toolOutput = "No matches found.";
+            logger.logToolCall('search_files', true, `Found ${results.length} results`);
+
           } else if (toolCall.name === 'read_file') {
             const f = safeAllFiles.find(file => file.name === toolCall.args.fileName);
-            responseText += f ? `\n\nRead content of ${f.name}` : `\n\nFile not found.`;
+            if (f) {
+              toolOutput = `Content of ${f.name}:\n\`\`\`${f.language}\n${f.content}\n\`\`\``;
+              logger.logToolCall('read_file', true, `Read ${f.name}`);
+            } else {
+              toolOutput = `Error: File "${toolCall.args.fileName}" not found.`;
+              logger.logToolCall('read_file', false, `File not found: ${toolCall.args.fileName}`);
+            }
+
+          } else if (toolCall.name === 'save_knowledge') {
+            const knowledgeEntry = knowledgeManager.saveKnowledge(
+              toolCall.args.tags, 
+              toolCall.args.content,
+              toolCall.args.tags.includes('#global') ? 'global' : 'project'
+            );
+            toolOutput = `Saved knowledge: ${toolCall.args.content}`;
+            logger.logToolCall('save_knowledge', true, `Saved knowledge`);
           }
-        } catch (error) { console.error('Tool Error', error); }
-      });
-    };
 
-    if (isGemini) {
-      const parts = [{ text: systemInstruction }, { text: currentMessage }];
-      const res = await callGemini(activeAgentModel, parts, apiKey, true, useInternet);
-      if (res.functionCalls) processToolCalls(res.functionCalls);
-      responseText = (res.text || "") + responseText;
-    } else {
-      const messages = [{ role: 'system', content: systemInstruction }, ...safeHistory.slice(-4).map(h => ({ role: h.role === 'model' ? 'assistant' : 'user', content: h.content })), { role: 'user', content: currentMessage }];
-      const res = await callOpenAICompatible(baseUrl, apiKey, activeAgentModel, messages, true, (isLocal ? getLocalProviderConfig('custom', baseUrl).customHeaders : {}));
+        } catch (error: any) { 
+          console.error('Tool Error', error);
+          toolOutput = `Tool execution error: ${error.message}`;
+          logger.logToolCall(fc.name, false, error.message);
+        }
 
-      responseText = (res.choices?.[0]?.message?.content || "") + responseText;
-      const tools = res.choices?.[0]?.message?.tool_calls;
-      if (tools) {
-        processToolCalls(tools.map((tc: any) => ({ name: tc.function.name, args: tc.function.arguments })));
-      }
+        // Add Tool Result to History so the Agent can see it in the next turn
+        if (isGemini) {
+            conversationMessages.push({ text: `TOOL_OUTPUT (${fc.name}): ${toolOutput}` });
+        } else {
+            conversationMessages.push({ role: 'user', content: `[System Tool Output for ${fc.name}]: ${toolOutput}` });
+        }
+      } // End Tool Loop
+
+    } // End While Loop
+
+    // If no tools were called but the request implies action, log this
+    if (allToolCalls.length === 0 && 
+        (currentMessage.toLowerCase().includes('create') || 
+         currentMessage.toLowerCase().includes('update') ||
+         currentMessage.toLowerCase().includes('fix') ||
+         currentMessage.toLowerCase().includes('add'))) {
+      logger.logToolCall('no_tool_used', false, 'Action requested but no tools were called');
     }
 
-    return { response: responseText.trim(), toolCalls: toolCalls.length > 0 ? toolCalls : undefined, proposedChanges, contextSummarized: usedCompression };
+    return { 
+      response: finalResponseText.trim(), 
+      toolCalls: allToolCalls.length > 0 ? allToolCalls : undefined, 
+      proposedChanges: allProposedChanges, 
+      contextSummarized: usedCompression 
+    };
   } catch (error: any) {
-    return { response: "", error: `Error: ${error.message}` };
+    logger.logToolCall('llm_service', false, error.message);
+    return { response: "", error: `Service Error: ${error.message}` };
   }
 };
 
-// --- STREAMING ORCHESTRATOR ---
+// --- ENHANCED STREAMING ORCHESTRATOR ---
 export const streamFixCodeWithGemini = async (
   request: FixRequest,
   callbacks: StreamingCallbacks,
@@ -242,11 +473,19 @@ export const streamFixCodeWithGemini = async (
     roles, knowledgeBase, useCompression, projectSummary
   } = request;
 
+  const logger = ToolUsageLogger.getInstance();
+  const knowledgeManager = KnowledgeManager.getInstance();
+
+  if (knowledgeBase) {
+    knowledgeManager.loadKnowledge(knowledgeBase);
+  }
+
   // 1. Validation
   if (!llmConfig || !currentMessage) {
     callbacks.onError("Configuration or message missing.");
     return;
   }
+  
   const safeAllFiles = allFiles || [];
   const safeActiveFile = activeFile || safeAllFiles[0];
 
@@ -256,7 +495,7 @@ export const streamFixCodeWithGemini = async (
   let baseUrl = llmConfig.baseUrl || '';
 
   if (isGemini) {
-    callbacks.onError('Streaming with tools is not fully supported for Gemini in this version. Disable streaming.');
+    callbacks.onError('Streaming with tools is not fully supported for Gemini in this version. Use non-streaming mode.');
     return;
   }
 
@@ -273,24 +512,44 @@ export const streamFixCodeWithGemini = async (
     // 2. Context Building
     let fileContext = "";
     if (useCompression && projectSummary) {
-      fileContext = `CONTEXT:\n${projectSummary.summary}\nACTIVE:\n${safeActiveFile.content}`;
+      fileContext = `PROJECT CONTEXT:\n${projectSummary.summary}\n\nACTIVE FILE (${safeActiveFile.name}):\n\`\`\`${safeActiveFile.language}\n${safeActiveFile.content}\n\`\`\``;
     } else {
-      fileContext = safeAllFiles.map(f => `File: ${f.name}\n\`\`\`${f.language}\n${f.content}\n\`\`\``).join('\n\n');
+      fileContext = `ALL PROJECT FILES:\n${safeAllFiles.map(f => `File: ${f.name} (${f.language})\n\`\`\`${f.language}\n${f.content}\n\`\`\``).join('\n\n')}`;
     }
 
-    const systemInstruction = `
-      You are an expert coding assistant.
-      ${fileContext}
-      USER REQUEST: ${currentMessage}
-      
-      CRITICAL: You have access to tools. 
-      IF THE USER ASKS TO CREATE OR UPDATE A FILE, YOU MUST CALL THE TOOLS 'create_file' or 'update_file'.
-      DO NOT just describe the code. Execute the tool immediately.
-    `;
+    // Improved Knowledge Retrieval for Streaming too
+    const messageTokens = currentMessage.toLowerCase().split(/[\s,.]+/);
+    const tagsInMessage: string[] = currentMessage.match(/#[\w-]+/g) || [];
+    const relevantKnowledge = (knowledgeBase || []).filter(entry => {
+        if (!entry.tags) return false;
+        if (entry.tags.some(tag => tagsInMessage.includes(tag))) return true;
+        if (entry.tags.includes('#global')) return true;
+        return entry.tags.some(tag => {
+            const bareTag = tag.replace('#', '').toLowerCase();
+            return messageTokens.includes(bareTag) || bareTag.split('-').every(part => messageTokens.includes(part));
+        });
+    });
+
+    const knowledgeContext = relevantKnowledge.length > 0 ? `\nRELEVANT KNOWLEDGE:\n${relevantKnowledge.map(k => `- ${k.content}`).join('\n')}` : "";
+
+    const coderRole = (roles || []).find(r => r.id === llmConfig.coderRoleId) || (roles || [])[1];
+    
+    const systemInstruction = buildSystemPrompt(
+      mode, 
+      fileContext, 
+      knowledgeContext, 
+      currentMessage, 
+      coderRole, 
+      true,
+      knowledgeManager
+    );
 
     const messages = [
       { role: 'system', content: systemInstruction },
-      ...(history || []).slice(-4).map(h => ({ role: h.role === 'model' ? 'assistant' : 'user', content: h.content })),
+      ...(history || []).slice(-4).map(h => ({ 
+        role: h.role === 'model' ? 'assistant' : 'user', 
+        content: h.content 
+      })),
       { role: 'user', content: currentMessage }
     ];
 
@@ -326,6 +585,7 @@ export const streamFixCodeWithGemini = async (
             if (toolName === 'create_file') callbacks.onStatusUpdate("📝 Creating new file...");
             if (toolName === 'update_file') callbacks.onStatusUpdate("🔨 Applying fixes to file...");
             if (toolName === 'read_file') callbacks.onStatusUpdate("📖 Reading file content...");
+            if (toolName === 'save_knowledge') callbacks.onStatusUpdate("💾 Saving knowledge...");
           }
         });
       },
@@ -339,32 +599,57 @@ export const streamFixCodeWithGemini = async (
     Object.values(accumulatedToolCalls).forEach((tc) => {
       try {
         if (!tc.name) return;
-        const args = tc.args ? JSON.parse(tc.args) : {};
+        // Use Safe Parser
+        const args = tc.args ? safeJsonParse(tc.args) : {};
 
-        finalToolCalls.push({ id: tc.id || generateUUID(), name: tc.name, args });
+        const toolCall: ToolCall = { id: tc.id || generateUUID(), name: tc.name, args };
+        finalToolCalls.push(toolCall);
 
         if (tc.name === 'create_file') {
-          proposedChanges.push({
-            id: generateUUID(),
-            fileName: args.name,
-            originalContent: '',
-            newContent: args.content,
-            type: 'create'
-          });
-        } else if (tc.name === 'update_file') {
-          const existing = safeAllFiles.find(f => f.name === args.name);
-          if (existing) {
-            proposedChanges.push({
-              id: generateUUID(),
-              fileName: args.name,
-              originalContent: existing.content,
-              newContent: args.content,
-              type: 'update'
-            });
+          if(isFileProtected(args.name)) {
+              callbacks.onContent(`\n\n[Security Blocked]: Cannot create protected file ${args.name}`);
+              logger.logToolCall('create_file', false, `Blocked create ${args.name}`);
+          } else {
+              proposedChanges.push({
+                id: generateUUID(),
+                fileName: args.name,
+                originalContent: '',
+                newContent: args.content,
+                type: 'create'
+              });
+              logger.logToolCall('create_file', true, `Stream created ${args.name}`);
           }
+        } else if (tc.name === 'update_file') {
+          if (isFileProtected(args.name)) {
+             callbacks.onContent(`\n\n[Security Blocked]: Cannot update protected file ${args.name}`);
+             logger.logToolCall('update_file', false, `Blocked update ${args.name}`);
+          } else {
+              const existing = safeAllFiles.find(f => f.name === args.name);
+              if (existing) {
+                proposedChanges.push({
+                  id: generateUUID(),
+                  fileName: args.name,
+                  originalContent: existing.content,
+                  newContent: args.content,
+                  type: 'update'
+                });
+                logger.logToolCall('update_file', true, `Stream updated ${args.name}`);
+              } else {
+                logger.logToolCall('update_file', false, `File not found in stream: ${args.name}`);
+              }
+          }
+        } else if (tc.name === 'save_knowledge') {
+            knowledgeManager.saveKnowledge(
+              args.tags, 
+              args.content,
+              args.tags.includes('#global') ? 'global' : 'project'
+            );
+            callbacks.onContent(`\n\n💾 [Stream] Knowledge saved: "${args.content.substring(0, 50)}..."`);
+            logger.logToolCall('save_knowledge', true, `Stream saved knowledge`);
         }
-      } catch (e) {
+      } catch (e: any) {
         console.error("Failed to parse accumulated tool call:", e);
+        logger.logToolCall('stream_tool_parse', false, e.message);
         callbacks.onContent(`\n[Error executing tool: ${e}]`);
       }
     });
@@ -375,12 +660,16 @@ export const streamFixCodeWithGemini = async (
 
     if (proposedChanges.length > 0 && callbacks.onProposedChanges) {
       callbacks.onProposedChanges(proposedChanges);
-      callbacks.onContent(`\n\n[SUCCESS] I have prepared ${proposedChanges.length} file changes. Please review and apply them.`);
+      callbacks.onContent(`\n\n✅ SUCCESS: Prepared ${proposedChanges.length} file changes. Please review and apply them.`);
     }
 
     callbacks.onComplete(fullTextResponse || "");
 
   } catch (error: any) {
+    logger.logToolCall('stream_service', false, error.message);
     if (error.name !== 'AbortError') callbacks.onError(error.message);
   }
 };
+
+// Export the logger for debugging
+export { ToolUsageLogger };
