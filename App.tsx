@@ -18,6 +18,7 @@ import { fixCodeWithGemini, streamFixCodeWithGemini } from './services/llmServic
 import { fetchRepoContents } from './services/githubService';
 import { contextService } from './services/contextService';
 import { modelSwitchService } from './services/modelSwitchService';
+import { KnowledgeManager } from './services/llmTools';
 
 // --- FACTORY FUNCTIONS ---
 const createNewFile = (name: string = 'script.js'): ProjectFile => ({
@@ -87,7 +88,7 @@ const App: React.FC = () => {
   });
 
   const [knowledgeBase, setKnowledgeBase] = useState<KnowledgeEntry[]>(() => {
-      const saved = localStorage.getItem('cm_knowledge');
+      const saved = localStorage.getItem('cm_knowledge_enhanced');
       return saved ? JSON.parse(saved) : [];
   });
 
@@ -128,8 +129,15 @@ const App: React.FC = () => {
 
   const chatContainerRef = useRef<HTMLDivElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const imageInputRef = useRef<HTMLInputElement>(null);
   const abortControllerRef = useRef<AbortController | null>(null);
   const theme = THEMES[themeName];
+
+  // Initialize Knowledge Manager
+  useEffect(() => {
+    const knowledgeManager = KnowledgeManager.getInstance();
+    knowledgeManager.loadKnowledge(knowledgeBase);
+  }, [knowledgeBase]);
 
   // --- PERSISTENCE ---
   useEffect(() => { localStorage.setItem('cm_theme', themeName); }, [themeName]);
@@ -139,7 +147,7 @@ const App: React.FC = () => {
   useEffect(() => { localStorage.setItem('cm_roles', JSON.stringify(roles)); }, [roles]);
   useEffect(() => { localStorage.setItem('cm_projects', JSON.stringify(projects)); }, [projects]);
   useEffect(() => { localStorage.setItem('cm_sessions_v2', JSON.stringify(sessions)); }, [sessions]);
-  useEffect(() => { localStorage.setItem('cm_knowledge', JSON.stringify(knowledgeBase)); }, [knowledgeBase]);
+  useEffect(() => { localStorage.setItem('cm_knowledge_enhanced', JSON.stringify(knowledgeBase)); }, [knowledgeBase]);
   useEffect(() => { localStorage.setItem('cm_use_streaming', String(useStreaming)); }, [useStreaming]);
   useEffect(() => { localStorage.setItem('cm_project_summaries', JSON.stringify(projectSummaries)); }, [projectSummaries]);
   useEffect(() => { localStorage.setItem('cm_use_compression', String(useCompression)); }, [useCompression]);
@@ -279,6 +287,24 @@ const App: React.FC = () => {
       }
   };
 
+  const handleFileUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
+      if (e.target.files && e.target.files[0]) {
+          const file = e.target.files[0];
+          const reader = new FileReader();
+          reader.onloadend = () => {
+              const content = reader.result as string;
+              // For text files, you might want to create a new file in the project
+              if (file.type.startsWith('text/')) {
+                  const newFile = createNewFile(file.name);
+                  newFile.content = content;
+                  const updatedFiles = [...activeProject.files, newFile];
+                  updateProject({ files: updatedFiles, activeFileId: newFile.id });
+              }
+          };
+          reader.readAsText(file);
+      }
+  };
+
   const toggleRecording = async () => {
       if (isRecording && mediaRecorder) {
           mediaRecorder.stop();
@@ -374,6 +400,11 @@ const App: React.FC = () => {
 
       if (response.error) { setError(response.error); return; }
 
+      // Update knowledge base if new knowledge was saved
+      if (response.newKnowledge && response.newKnowledge.length > 0) {
+        setKnowledgeBase(prev => [...prev, ...response.newKnowledge!]);
+      }
+
       setProcessSteps(prev => [...prev, 'Analyzing response...', 'Process complete.']);
       setIsProcessComplete(true);
       processAIResponse(response, history);
@@ -433,7 +464,14 @@ const App: React.FC = () => {
 
     toolCalls.forEach(call => {
       if (call.name === 'save_knowledge') {
-        newKnowledge.push({ id: crypto.randomUUID(), tags: call.args.tags, content: call.args.content, scope: 'global', timestamp: Date.now() });
+        const newEntry: KnowledgeEntry = {
+          id: crypto.randomUUID(),
+          tags: call.args.tags,
+          content: call.args.content,
+          scope: call.args.tags.includes('#global') ? 'global' : 'project',
+          timestamp: Date.now()
+        };
+        newKnowledge.push(newEntry);
       } else if (call.name === 'manage_tasks') {
         const { action, task, phase, taskId, status } = call.args;
         if (action === 'add') newTodos.push({ id: crypto.randomUUID(), task, phase: phase || 'General', status: 'pending' });
@@ -443,7 +481,9 @@ const App: React.FC = () => {
       }
     });
 
-    if (newKnowledge.length > knowledgeBase.length) setKnowledgeBase(newKnowledge);
+    if (newKnowledge.length > knowledgeBase.length) {
+      setKnowledgeBase(newKnowledge);
+    }
     if (JSON.stringify(newTodos) !== JSON.stringify(todoList)) {
       setTodoList(newTodos);
       setLeftPanelTab('todos');
@@ -474,7 +514,7 @@ const App: React.FC = () => {
 
     // Update session immediately with the edit (removing subsequent messages)
     updateSession({ messages: newHistory });
-    
+
     // Retrigger AI with the new history
     triggerAIResponse(newHistory);
   };
@@ -496,7 +536,7 @@ const App: React.FC = () => {
   return (
     <div className={`flex h-screen overflow-hidden ${theme.bgApp} ${theme.textMain} transition-colors duration-300`}>
       {isSidebarOpen && <div className="fixed inset-0 bg-black/60 backdrop-blur-sm z-30 lg:hidden" onClick={() => setIsSidebarOpen(false)} />}
-      
+
       {viewMode === 'chat' && (
         <AppSidebar
             activeTab={activeTab} setActiveTab={setActiveTab} isSidebarOpen={isSidebarOpen} setIsSidebarOpen={setIsSidebarOpen}
@@ -541,8 +581,30 @@ const App: React.FC = () => {
              {viewMode === 'classic' && (
                 <div className={`p-4 border-t ${theme.border} ${theme.bgPanel} flex-shrink-0`}>
                    <div className="relative">
-                       <textarea value={inputInstruction} onChange={(e) => setInputInstruction(e.target.value)} onKeyDown={(e) => {if(e.key === 'Enter' && !e.shiftKey) {e.preventDefault(); handleSendMessage();}}} placeholder="Instructions..." className={`w-full ${theme.bgApp} border ${theme.border} rounded-xl px-4 py-3 pr-14 text-sm outline-none resize-none`} rows={2} />
-                       <button onClick={handleSendMessage} disabled={isLoading} className={`absolute right-2 bottom-2 p-2 rounded-lg ${theme.button} text-white`}>{isLoading ? <div className="animate-spin w-5 h-5 border-2 border-white/30 border-t-white rounded-full"/> : <Play className="w-5 h-5 fill-current"/>}</button>
+                       <textarea 
+                         value={inputInstruction} 
+                         onChange={(e) => setInputInstruction(e.target.value)} 
+                         onKeyDown={(e) => {
+                           if(e.key === 'Enter' && !e.shiftKey) {
+                             e.preventDefault(); 
+                             handleSendMessage();
+                           }
+                         }} 
+                         placeholder="Instructions..." 
+                         className={`w-full ${theme.bgApp} border ${theme.border} rounded-xl pl-12 px-4 py-3 pr-14 text-sm outline-none resize-none`} 
+                         rows={2} 
+                       />
+                       {/* Photo and Microphone buttons for classic mode */}
+                       <div className="flex flex-col gap-1 absolute left-2 bottom-3 z-10">
+                         <input type="file" ref={imageInputRef} onChange={handleImageUpload} accept="image/*" className="hidden" />
+                         <button onClick={() => imageInputRef.current?.click()} className={`${theme.textMuted} hover:text-white p-1.5 rounded-full hover:bg-white/10`}><ImageIcon className="w-4 h-4" /></button>
+                         <input type="file" ref={fileInputRef} onChange={handleFileUpload} accept=".txt,.js,.ts,.jsx,.tsx,.html,.css,.py,.java,.json" className="hidden" />
+                         <button onClick={() => fileInputRef.current?.click()} className={`${theme.textMuted} hover:text-white p-1.5 rounded-full hover:bg-white/10`}><Code2 className="w-4 h-4" /></button>
+                         <button onClick={toggleRecording} className={`${isRecording ? 'text-red-500 animate-pulse' : theme.textMuted} hover:text-white p-1.5 rounded-full hover:bg-white/10`}><Mic className="w-4 h-4" /></button>
+                       </div>
+                       <button onClick={handleSendMessage} disabled={isLoading} className={`absolute right-2 bottom-2 p-2 rounded-lg ${isLoading ? 'bg-white/5 text-slate-500 cursor-not-allowed' : `${theme.button} text-white`}`}>
+                         {isLoading ? <div className="animate-spin w-5 h-5 border-2 border-white/30 border-t-white rounded-full"/> : <Play className="w-5 h-5 fill-current"/>}
+                       </button>
                    </div>
                 </div>
              )}
@@ -568,6 +630,7 @@ const App: React.FC = () => {
                     <div className="flex flex-col items-center justify-center h-full opacity-40 text-center p-8">
                         <Sparkles className="w-12 h-12 mb-4 text-yellow-500"/>
                         <p>Start a conversation, ask for fixes, or create new features.</p>
+                        <p className="text-sm mt-2 opacity-70">Teach me your preferences and I'll remember them across sessions!</p>
                     </div>
                 )}
                 {activeSession.messages.map((msg, idx) => (
@@ -575,22 +638,40 @@ const App: React.FC = () => {
                         <div className={`max-w-[90%] lg:max-w-[85%] rounded-2xl px-5 py-4 shadow-sm ${msg.role === 'user' ? `${theme.accentBg} border border-${theme.accent}/20 rounded-tr-none` : `${theme.bgPanel} border ${theme.border} rounded-tl-none`}`}>
                             {msg.role === 'user' ? (
                                 <div className="space-y-2 relative group">
-                                    {msg.attachments?.map((att, i) => (<div key={i} className="mb-2 rounded overflow-hidden border border-white/10">{att.type === 'image' ? <img src={`data:${att.mimeType};base64,${att.content}`} className="max-h-48 object-cover" /> : <div className="p-2 flex items-center gap-2 bg-white/5"><Mic className="w-4 h-4"/> Audio Clip</div>}</div>))}
+                                    {msg.attachments?.map((att, i) => (
+                                      <div key={i} className="mb-2 rounded overflow-hidden border border-white/10">
+                                        {att.type === 'image' ? (
+                                          <img src={`data:${att.mimeType};base64,${att.content}`} className="max-h-48 object-cover" alt="Attachment" />
+                                        ) : att.type === 'audio' ? (
+                                          <div className="p-2 flex items-center gap-2 bg-white/5">
+                                            <Mic className="w-4 h-4"/> Audio Clip
+                                          </div>
+                                        ) : null}
+                                      </div>
+                                    ))}
                                     <p className={`whitespace-pre-wrap text-sm ${theme.textMain}`}>{msg.content}</p>
-                                    {msg.isEdited && <span className="text-[10px] opacity-60 absolute bottom-0 right-0 -mb-4">edited</span>}
+                                    {msg.isEdited && (
+                                      <span className="text-[10px] opacity-60 absolute -bottom-5 right-0">edited</span>
+                                    )}
+                                    {/* Edit Pencil Button */}
                                     <button 
                                       onClick={() => {
                                         const newText = prompt("Edit your message:", msg.content);
-                                        if (newText && newText !== msg.content) handleEditMessage(msg.id, newText);
+                                        if (newText !== null && newText !== msg.content) {
+                                          handleEditMessage(msg.id, newText);
+                                        }
                                       }}
-                                      className="absolute -left-8 top-1 opacity-0 group-hover:opacity-100 p-1 hover:bg-white/10 rounded text-slate-400 hover:text-white"
+                                      className="absolute -left-8 top-0 opacity-0 group-hover:opacity-100 p-1.5 hover:bg-white/10 rounded text-slate-400 hover:text-white transition-all duration-200"
+                                      title="Edit message"
                                     >
                                       <Pencil className="w-3 h-3" />
                                     </button>
                                 </div>
-                            ) : (<MarkdownRenderer content={msg.content} theme={theme} />)}
+                            ) : (
+                              <MarkdownRenderer content={msg.content} theme={theme} />
+                            )}
                         </div>
-                        
+
                         {/* Retry Button for the last AI message */}
                         {msg.role === 'model' && idx === activeSession.messages.length - 1 && !isLoading && (
                           <div className="mt-1 flex gap-2">
@@ -639,12 +720,32 @@ const App: React.FC = () => {
 
              {viewMode === 'chat' && (
                  <div className={`p-4 border-t ${theme.border} ${theme.bgPanel} flex-shrink-0`}>
-                     {attachments.length > 0 && (<div className="flex gap-2 mb-2 overflow-x-auto pb-1">{attachments.map((att, i) => (<div key={i} className="relative group flex-shrink-0">{att.type === 'image' ? <img src={`data:${att.mimeType};base64,${att.content}`} className="h-16 w-16 object-cover rounded border border-white/20" /> : <div className="h-16 w-16 flex items-center justify-center bg-white/10 rounded border border-white/20"><Mic className="w-6 h-6"/></div>}<button onClick={() => setAttachments(attachments.filter((_, idx) => idx !== i))} className="absolute -top-1 -right-1 bg-red-500 text-white rounded-full p-0.5"><X className="w-3 h-3"/></button></div>))}</div>)}
+                     {attachments.length > 0 && (
+                       <div className="flex gap-2 mb-2 overflow-x-auto pb-1">
+                         {attachments.map((att, i) => (
+                           <div key={i} className="relative group flex-shrink-0">
+                             {att.type === 'image' ? (
+                               <img src={`data:${att.mimeType};base64,${att.content}`} className="h-16 w-16 object-cover rounded border border-white/20" alt="Attachment" />
+                             ) : att.type === 'audio' ? (
+                               <div className="h-16 w-16 flex items-center justify-center bg-white/10 rounded border border-white/20">
+                                 <Mic className="w-6 h-6"/>
+                               </div>
+                             ) : null}
+                             <button 
+                               onClick={() => setAttachments(attachments.filter((_, idx) => idx !== i))} 
+                               className="absolute -top-1 -right-1 bg-red-500 text-white rounded-full p-0.5 hover:bg-red-600 transition-colors"
+                             >
+                               <X className="w-3 h-3"/>
+                             </button>
+                           </div>
+                         ))}
+                       </div>
+                     )}
                      <div className="flex gap-2 mb-2 overflow-x-auto pb-1 no-scrollbar">
                         <button onClick={() => updateSession({ mode: 'FIX' })} className={`px-3 py-1.5 rounded-full text-xs font-medium border transition-all flex items-center gap-1.5 ${activeSession.mode === 'FIX' ? `${theme.button} border-transparent text-white` : `border-${theme.border} ${theme.textMuted}`}`}><Wrench className="w-3 h-3"/> Fix</button>
                         <button onClick={() => updateSession({ mode: 'EXPLAIN' })} className={`px-3 py-1.5 rounded-full text-xs font-medium border transition-all flex items-center gap-1.5 ${activeSession.mode === 'EXPLAIN' ? `${theme.button} border-transparent text-white` : `border-${theme.border} ${theme.textMuted}`}`}><BookOpen className="w-3 h-3"/> Explain</button>
                         <button onClick={() => setUseInternet(!useInternet)} className={`px-3 py-1.5 rounded-full text-xs font-medium border transition-all flex items-center gap-1.5 ${useInternet ? `bg-blue-600 border-transparent text-white` : `border-${theme.border} ${theme.textMuted}`}`}><Globe className="w-3 h-3"/> Internet</button>
-                         {/* RESTORED COMPRESSION BUTTON */}
+                         {/* COMPRESSION BUTTON */}
                          <button 
                           onClick={() => setUseCompression(!useCompression)}
                           className={`px-3 py-1.5 rounded-full text-xs font-medium border transition-all flex items-center gap-1.5 ${useCompression ? 'bg-purple-600 border-transparent text-white' : `border-${theme.border} ${theme.textMuted}`}`}
@@ -652,23 +753,72 @@ const App: React.FC = () => {
                         >
                           <Zap className="w-3 h-3" /> Compress
                         </button>
-                        {isLoading && (<button onClick={stopStreaming} className={`px-3 py-1.5 rounded-full text-xs font-medium border transition-all flex items-center gap-1.5 bg-red-600 border-transparent text-white`}><StopCircle className="w-3 h-3"/> Stop</button>)}
+                        {isLoading && (
+                          <button onClick={stopStreaming} className={`px-3 py-1.5 rounded-full text-xs font-medium border transition-all flex items-center gap-1.5 bg-red-600 border-transparent text-white`}>
+                            <StopCircle className="w-3 h-3"/> Stop
+                          </button>
+                        )}
                      </div>
                      <div className="relative flex items-end gap-2">
+                        {/* Photo, File, and Microphone buttons for chat mode */}
                         <div className="flex flex-col gap-1 absolute left-2 bottom-3 z-10">
-                            <input type="file" ref={fileInputRef} onChange={handleImageUpload} accept="image/*" className="hidden" />
-                            <button onClick={() => fileInputRef.current?.click()} className={`${theme.textMuted} hover:text-white p-1.5 rounded-full hover:bg-white/10`}><ImageIcon className="w-4 h-4" /></button>
-                            <button onClick={toggleRecording} className={`${isRecording ? 'text-red-500 animate-pulse' : theme.textMuted} hover:text-white p-1.5 rounded-full hover:bg-white/10`}><Mic className="w-4 h-4" /></button>
+                            <input type="file" ref={imageInputRef} onChange={handleImageUpload} accept="image/*" className="hidden" />
+                            <button onClick={() => imageInputRef.current?.click()} className={`${theme.textMuted} hover:text-white p-1.5 rounded-full hover:bg-white/10 transition-colors`} title="Upload image">
+                              <ImageIcon className="w-4 h-4" />
+                            </button>
+                            <input type="file" ref={fileInputRef} onChange={handleFileUpload} accept=".txt,.js,.ts,.jsx,.tsx,.html,.css,.py,.java,.json" className="hidden" />
+                            <button onClick={() => fileInputRef.current?.click()} className={`${theme.textMuted} hover:text-white p-1.5 rounded-full hover:bg-white/10 transition-colors`} title="Upload code file">
+                              <Code2 className="w-4 h-4" />
+                            </button>
+                            <button onClick={toggleRecording} className={`${isRecording ? 'text-red-500 animate-pulse' : theme.textMuted} hover:text-white p-1.5 rounded-full hover:bg-white/10 transition-colors`} title="Record audio">
+                              <Mic className="w-4 h-4" />
+                            </button>
                         </div>
-                        <textarea value={inputInstruction} onChange={(e) => setInputInstruction(e.target.value)} onKeyDown={(e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); handleSendMessage(); } }} placeholder="Message..." className={`w-full ${theme.bgApp} border ${theme.border} rounded-xl pl-10 px-4 py-3 text-sm outline-none resize-none max-h-32 custom-scrollbar shadow-inner`} rows={1} style={{minHeight: '46px'}} />
-                        <button onClick={handleSendMessage} disabled={isLoading} className={`p-3 rounded-xl flex-shrink-0 transition-all ${isLoading ? 'bg-white/5 text-slate-500 cursor-not-allowed' : `${theme.button} ${theme.buttonHover} text-white shadow-lg`}`}><Send className="w-5 h-5" /></button>
+                        <textarea 
+                          value={inputInstruction} 
+                          onChange={(e) => setInputInstruction(e.target.value)} 
+                          onKeyDown={(e) => { 
+                            if (e.key === 'Enter' && !e.shiftKey) { 
+                              e.preventDefault(); 
+                              handleSendMessage(); 
+                            } 
+                          }} 
+                          placeholder="Message..." 
+                          className={`w-full ${theme.bgApp} border ${theme.border} rounded-xl pl-12 px-4 py-3 text-sm outline-none resize-none max-h-32 custom-scrollbar shadow-inner`} 
+                          rows={1} 
+                          style={{minHeight: '46px'}} 
+                        />
+                        <button 
+                          onClick={handleSendMessage} 
+                          disabled={isLoading} 
+                          className={`p-3 rounded-xl flex-shrink-0 transition-all ${isLoading ? 'bg-white/5 text-slate-500 cursor-not-allowed' : `${theme.button} ${theme.buttonHover} text-white shadow-lg`}`}
+                        >
+                          <Send className="w-5 h-5" />
+                        </button>
                      </div>
                  </div>
              )}
           </div>
         </div>
       </div>
-      {showSettings && <SettingsModal theme={theme} themeName={themeName} setThemeName={setThemeName} viewMode={viewMode} setViewMode={setViewMode} highCapacity={highCapacity} setHighCapacity={setHighCapacity} llmConfig={llmConfig} setLlmConfig={setLlmConfig} roles={roles} setRoles={setRoles} useStreaming={useStreaming} setUseStreaming={setUseStreaming} onClose={() => setShowSettings(false)} />}
+      {showSettings && (
+        <SettingsModal 
+          theme={theme} 
+          themeName={themeName} 
+          setThemeName={setThemeName} 
+          viewMode={viewMode} 
+          setViewMode={setViewMode} 
+          highCapacity={highCapacity} 
+          setHighCapacity={setHighCapacity} 
+          llmConfig={llmConfig} 
+          setLlmConfig={setLlmConfig} 
+          roles={roles} 
+          setRoles={setRoles} 
+          useStreaming={useStreaming} 
+          setUseStreaming={setUseStreaming} 
+          onClose={() => setShowSettings(false)} 
+        />
+      )}
     </div>
   );
 };
