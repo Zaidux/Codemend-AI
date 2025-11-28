@@ -1,10 +1,17 @@
 import { GoogleGenAI } from "@google/genai";
-import { GEMINI_TOOL_DEFINITIONS, OPENAI_TOOL_DEFINITIONS } from './llmTools';
+import { GEMINI_TOOL_DEFINITIONS, OPENAI_TOOL_DEFINITIONS, ToolUsageLogger } from './llmTools';
 
-export const callGemini = async (model: string, parts: any[], apiKey: string, tools: boolean = false, useInternet: boolean = false): Promise<any> => {
+export const callGemini = async (
+  model: string, 
+  parts: any[], 
+  apiKey: string, 
+  tools: boolean = false, 
+  useInternet: boolean = false
+): Promise<any> => {
   const ai = new GoogleGenAI({ apiKey });
+  const logger = ToolUsageLogger.getInstance();
   const config: any = {
-    thinkingConfig: { thinkingBudget: 0 }
+    thinkingConfig: { thinkingBudget: 1 } // Increased for better tool usage
   };
 
   const activeTools: any[] = [];
@@ -27,9 +34,18 @@ export const callGemini = async (model: string, parts: any[], apiKey: string, to
       contents: { parts: parts } as any,
       config
     });
+
+    // Log tool usage
+    if (response.functionCalls && response.functionCalls.length > 0) {
+      response.functionCalls.forEach((call: any) => {
+        logger.logToolCall(call.name, true);
+      });
+    }
+
     return response;
   } catch (error: any) {
     console.error('Gemini API Error:', error);
+    logger.logToolCall('gemini_api_call', false, error.message);
     throw new Error(`Gemini API Error: ${error.message}`);
   }
 };
@@ -43,6 +59,7 @@ export const callOpenAICompatible = async (
   customHeaders: Record<string, string> = {},
   signal?: AbortSignal
 ): Promise<any> => {
+  const logger = ToolUsageLogger.getInstance();
   const body: any = {
     model: model,
     messages: messages,
@@ -86,15 +103,26 @@ export const callOpenAICompatible = async (
       throw new Error(errorMessage);
     }
 
-    return await response.json();
+    const data = await response.json();
+    
+    // Log tool usage
+    const toolCalls = data.choices?.[0]?.message?.tool_calls;
+    if (toolCalls && toolCalls.length > 0) {
+      toolCalls.forEach((call: any) => {
+        logger.logToolCall(call.function.name, true);
+      });
+    }
+
+    return data;
   } catch (error: any) {
     if (error.name === 'AbortError') throw error;
     console.error('OpenAI API Error:', error);
+    logger.logToolCall('openai_api_call', false, error.message);
     throw new Error(`API Error: ${error.message}`);
   }
 };
 
-// Streaming version with Timeout Fix
+// Enhanced streaming version with better tool handling
 export const callOpenAICompatibleStream = async (
   baseUrl: string, 
   apiKey: string, 
@@ -106,6 +134,7 @@ export const callOpenAICompatibleStream = async (
   onToolCall?: (toolCallChunks: any[]) => void,
   signal?: AbortSignal
 ): Promise<string> => {
+  const logger = ToolUsageLogger.getInstance();
   const body: any = {
     model: model,
     messages: messages,
@@ -152,7 +181,7 @@ export const callOpenAICompatibleStream = async (
     const decoder = new TextDecoder();
 
     // Timeout logic for stalled streams
-    const STREAM_TIMEOUT_MS = 30000; // 30 seconds
+    const STREAM_TIMEOUT_MS = 30000;
     let lastActivity = Date.now();
 
     const timeoutInterval = setInterval(() => {
@@ -163,10 +192,13 @@ export const callOpenAICompatibleStream = async (
       }
     }, 5000);
 
+    // Track tool calls for logging
+    const completedToolCalls = new Set<string>();
+
     try {
       while (true) {
         const { done, value } = await reader.read();
-        lastActivity = Date.now(); // Reset timeout timer
+        lastActivity = Date.now();
         if (done) break;
 
         const chunk = decoder.decode(value, { stream: true });
@@ -188,6 +220,14 @@ export const callOpenAICompatibleStream = async (
               const toolCalls = data.choices[0]?.delta?.tool_calls;
               if (toolCalls && onToolCall) {
                 onToolCall(toolCalls);
+                
+                // Log completed tool calls
+                toolCalls.forEach((chunk: any) => {
+                  if (chunk.function?.name && !completedToolCalls.has(chunk.index)) {
+                    logger.logToolCall(chunk.function.name, true);
+                    completedToolCalls.add(chunk.index);
+                  }
+                });
               }
             } catch (e) {
               // Ignore partial JSON parse errors
@@ -204,7 +244,7 @@ export const callOpenAICompatibleStream = async (
   } catch (error: any) {
     if (error.name === 'AbortError') throw error;
     console.error('OpenAI Stream Error:', error);
-    // Return what we have so far instead of failing completely if it was just a timeout
-    return ""; 
+    logger.logToolCall('openai_stream_call', false, error.message);
+    return fullContent; // Return what we have so far
   }
 };
