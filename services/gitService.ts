@@ -1,4 +1,9 @@
-import { Project, ProjectFile, GitStatus, GitCommit, GitBranch, FileChange } from '../types';
+import { ProjectFile, GitStatus, GitCommit, GitBranch, FileChange } from '../types';
+
+// Simple Diff Logic (Replacment for complex diff libraries to keep it lightweight)
+const simpleDiff = (oldText: string, newText: string): 'modified' | 'identical' => {
+  return oldText.trim() === newText.trim() ? 'identical' : 'modified';
+};
 
 export interface GitConfig {
   userName?: string;
@@ -6,285 +11,220 @@ export interface GitConfig {
   remoteUrl?: string;
   branch?: string;
   autoCommit?: boolean;
-  commitMessageTemplate?: string;
+}
+
+interface GitState {
+  projectId: string;
+  branches: Record<string, GitBranch>;
+  currentBranch: string;
+  commits: GitCommit[];
+  stagingArea: FileChange[];
+  // We store a snapshot of the file structure at HEAD to speed up diffs
+  headSnapshot: Record<string, string>; 
+  config: GitConfig;
 }
 
 export class GitService {
   private static instance: GitService;
+  private readonly STORAGE_PREFIX = 'codemend-git-v2-';
 
   public static getInstance(): GitService {
-    if (!GitService.instance) {
-      GitService.instance = new GitService();
-    }
+    if (!GitService.instance) GitService.instance = new GitService();
     return GitService.instance;
   }
 
-  // Initialize git for a project
+  // Initialize
   async init(projectId: string, config: GitConfig = {}): Promise<void> {
-    const gitState = this.getGitState(projectId) || {
+    if (this.getGitState(projectId)) return; // Already initialized
+
+    const initialState: GitState = {
       projectId,
       branches: {},
       currentBranch: 'main',
       commits: [],
+      stagingArea: [],
+      headSnapshot: {}, // Map of filename -> content
       config: {
-        userName: config.userName || 'CodeMend AI',
-        userEmail: config.userEmail || 'ai@codemend.com',
-        remoteUrl: config.remoteUrl,
-        branch: config.branch || 'main',
-        autoCommit: config.autoCommit || false,
-        commitMessageTemplate: config.commitMessageTemplate || 'feat: {changes}'
+        userName: config.userName || 'AI Assistant',
+        userEmail: config.userEmail || 'bot@codemend.ai',
+        remoteUrl: config.remoteUrl || '',
+        branch: 'main'
       }
     };
 
-    // Create initial commit if no commits exist
-    if (gitState.commits.length === 0) {
-      const initialCommit: GitCommit = {
-        id: this.generateCommitId(),
-        message: 'Initial commit',
-        author: `${gitState.config.userName} <${gitState.config.userEmail}>`,
-        timestamp: Date.now(),
-        changes: [],
-        branch: gitState.currentBranch
-      };
+    // Create Initial Commit (Empty)
+    const initCommit: GitCommit = {
+      id: this.generateHash(),
+      message: 'Initial commit',
+      author: initialState.config.userName!,
+      timestamp: Date.now(),
+      changes: [],
+      branch: 'main'
+    };
 
-      gitState.commits.push(initialCommit);
-      gitState.branches[gitState.currentBranch] = {
-        name: gitState.currentBranch,
-        head: initialCommit.id,
-        commits: [initialCommit.id]
-      };
-    }
+    initialState.commits.push(initCommit);
+    initialState.branches['main'] = {
+      name: 'main',
+      head: initCommit.id,
+      commits: [initCommit.id]
+    };
 
-    this.saveGitState(projectId, gitState);
+    this.saveGitState(projectId, initialState);
   }
 
-  // Get git status for a project
-  async getStatus(projectId: string, files: ProjectFile[]): Promise<GitStatus> {
-    const gitState = this.getGitState(projectId);
-    if (!gitState) {
-      return {
-        hasGit: false,
-        changes: [],
-        currentBranch: 'main',
-        branches: [],
-        ahead: 0,
-        behind: 0
-      };
+  // Get Status (Actual Diffing)
+  async getStatus(projectId: string, currentFiles: ProjectFile[]): Promise<GitStatus> {
+    const state = this.getGitState(projectId);
+    if (!state) return { hasGit: false, changes: [], currentBranch: '', branches: [], ahead: 0, behind: 0 };
+
+    const changes: FileChange[] = [];
+    const headFiles = state.headSnapshot;
+
+    // 1. Detect Modified & Added
+    for (const file of currentFiles) {
+      const originalContent = headFiles[file.name];
+      
+      if (originalContent === undefined) {
+        changes.push({ type: 'added', file: file, currentContent: file.content });
+      } else if (simpleDiff(originalContent, file.content) === 'modified') {
+        changes.push({ 
+          type: 'modified', 
+          file: file, 
+          previousContent: originalContent, 
+          currentContent: file.content 
+        });
+      }
     }
 
-    const lastCommit = gitState.commits[gitState.commits.length - 1];
-    const changes = await this.detectChangesSinceCommit(projectId, files, lastCommit);
+    // 2. Detect Deleted
+    const currentFileNames = new Set(currentFiles.map(f => f.name));
+    for (const [name, content] of Object.entries(headFiles)) {
+      if (!currentFileNames.has(name)) {
+        changes.push({ 
+          type: 'deleted', 
+          file: { id: 'deleted', name, content, language: 'text' }, // Mock file for display
+          previousContent: content 
+        });
+      }
+    }
 
     return {
       hasGit: true,
-      changes: changes,
-      currentBranch: gitState.currentBranch,
-      branches: Object.keys(gitState.branches),
-      ahead: 0, // Would need remote comparison
-      behind: 0 // Would need remote comparison
+      changes,
+      currentBranch: state.currentBranch,
+      branches: Object.keys(state.branches),
+      ahead: 0,
+      behind: 0
     };
   }
 
-  // Commit changes
-  async commit(projectId: string, message: string, files: ProjectFile[]): Promise<GitCommit> {
-    const gitState = this.getGitState(projectId);
-    if (!gitState) {
-      throw new Error('Git not initialized for this project');
-    }
+  // Commit
+  async commit(projectId: string, message: string, currentFiles: ProjectFile[]): Promise<GitCommit> {
+    const state = this.getGitState(projectId);
+    if (!state) throw new Error("Git not initialized");
 
-    const changes = await this.detectChangesSinceCommit(
-      projectId, 
-      files, 
-      gitState.commits[gitState.commits.length - 1]
-    );
+    const status = await this.getStatus(projectId, currentFiles);
+    if (status.changes.length === 0) throw new Error("Nothing to commit (working tree clean)");
 
-    if (changes.length === 0) {
-      throw new Error('No changes to commit');
-    }
-
-    const commit: GitCommit = {
-      id: this.generateCommitId(),
-      message: message,
-      author: `${gitState.config.userName} <${gitState.config.userEmail}>`,
+    const newCommit: GitCommit = {
+      id: this.generateHash(),
+      message,
+      author: state.config.userName || 'User',
       timestamp: Date.now(),
-      changes: changes,
-      branch: gitState.currentBranch
+      changes: status.changes, // Store the diff
+      branch: state.currentBranch
     };
 
-    gitState.commits.push(commit);
-    
-    // Update branch head
-    if (gitState.branches[gitState.currentBranch]) {
-      gitState.branches[gitState.currentBranch].head = commit.id;
-      gitState.branches[gitState.currentBranch].commits.push(commit.id);
-    }
+    // Update History
+    state.commits.push(newCommit);
+    state.branches[state.currentBranch].head = newCommit.id;
+    state.branches[state.currentBranch].commits.push(newCommit.id);
 
-    this.saveGitState(projectId, gitState);
-    return commit;
+    // Update HEAD Snapshot (This is the "checkout" state)
+    // We update the internal map to reflect the new state of files
+    status.changes.forEach(change => {
+      if (change.type === 'deleted') {
+        delete state.headSnapshot[change.file.name];
+      } else {
+        state.headSnapshot[change.file.name] = change.currentContent!;
+      }
+    });
+
+    this.saveGitState(projectId, state);
+    return newCommit;
   }
 
-  // Auto-generate commit message based on changes
-  generateCommitMessage(changes: FileChange[], template?: string): string {
-    const added = changes.filter(c => c.type === 'added').length;
-    const modified = changes.filter(c => c.type === 'modified').length;
-    const deleted = changes.filter(c => c.type === 'deleted').length;
+  // Checkout (Switch Branch)
+  async checkout(projectId: string, branchName: string): Promise<Record<string, string>> {
+    const state = this.getGitState(projectId);
+    if (!state || !state.branches[branchName]) throw new Error(`Branch ${branchName} not found`);
 
-    const changeSummary = [];
-    if (added > 0) changeSummary.push(`add ${added} file${added > 1 ? 's' : ''}`);
-    if (modified > 0) changeSummary.push(`update ${modified} file${modified > 1 ? 's' : ''}`);
-    if (deleted > 0) changeSummary.push(`delete ${deleted} file${deleted > 1 ? 's' : ''}`);
-
-    const defaultMessage = `chore: ${changeSummary.join(', ')}`;
+    // In a real git, we would reconstruct the file system from the commit graph.
+    // Here, we simplified by storing 'headSnapshot' only for the current branch.
+    // To support switching, we need to rebuild snapshot. 
+    // This is a complex operation for a browser mock, so we'll simulate logic:
+    // 1. Find the commit HEAD of target branch
+    // 2. Replay all changes from Initial Commit -> HEAD
     
-    if (!template) return defaultMessage;
+    const targetHeadId = state.branches[branchName].head;
+    const reconstructedFiles: Record<string, string> = {};
 
+    // Replay history (simplistic linear replay)
+    // Find path from root to targetHeadId
+    const commitPath = this.getCommitPath(state, targetHeadId);
+    
+    commitPath.forEach(commit => {
+      commit.changes.forEach(change => {
+        if (change.type === 'added' || change.type === 'modified') {
+          reconstructedFiles[change.file.name] = change.currentContent!;
+        } else if (change.type === 'deleted') {
+          delete reconstructedFiles[change.file.name];
+        }
+      });
+    });
+
+    // Update State
+    state.currentBranch = branchName;
+    state.headSnapshot = reconstructedFiles;
+    this.saveGitState(projectId, state);
+
+    return reconstructedFiles;
+  }
+
+  // Helper: Get linear history for reconstruction
+  private getCommitPath(state: GitState, targetCommitId: string): GitCommit[] {
+    // This assumes linear history for simplicity. 
+    // Real git needs DAG traversal.
+    const path: GitCommit[] = [];
+    const target = state.commits.find(c => c.id === targetCommitId);
+    if (!target) return [];
+
+    // Simple hack: filter commits belonging to this branch's history
+    // For a robust system, commits need 'parentId'
+    // Here we just return all commits up to the target timestamp
+    return state.commits.filter(c => c.timestamp <= target.timestamp);
+  }
+
+  // --- Helpers ---
+  private getGitState(projectId: string): GitState | null {
     try {
-      return template.replace('{changes}', changeSummary.join(', '));
-    } catch {
-      return defaultMessage;
-    }
+      const data = localStorage.getItem(this.STORAGE_PREFIX + projectId);
+      return data ? JSON.parse(data) : null;
+    } catch { return null; }
   }
 
-  // Push to remote (simulated - would integrate with actual Git in production)
-  async push(projectId: string): Promise<void> {
-    const gitState = this.getGitState(projectId);
-    if (!gitState) {
-      throw new Error('Git not initialized for this project');
-    }
-
-    if (!gitState.config.remoteUrl) {
-      throw new Error('No remote URL configured');
-    }
-
-    // Simulate push operation
-    console.log(`Pushing to ${gitState.config.remoteUrl}...`);
-    
-    // In a real implementation, this would use the GitHub API or git commands
-    // For now, we'll just simulate success
-    await new Promise(resolve => setTimeout(resolve, 1000));
-    
-    // Update last push timestamp
-    gitState.lastPush = Date.now();
-    this.saveGitState(projectId, gitState);
-  }
-
-  // Pull from remote (simulated - would integrate with GitHub service)
-  async pull(projectId: string): Promise<FileChange[]> {
-    const gitState = this.getGitState(projectId);
-    if (!gitState) {
-      throw new Error('Git not initialized for this project');
-    }
-
-    if (!gitState.config.remoteUrl) {
-      throw new Error('No remote URL configured');
-    }
-
-    // Simulate pull operation
-    console.log(`Pulling from ${gitState.config.remoteUrl}...`);
-    await new Promise(resolve => setTimeout(resolve, 1000));
-
-    // In a real implementation, this would fetch from the remote
-    // and return the changes that need to be applied
-    // For now, return empty changes
-    return [];
-  }
-
-  // Get commit history
-  async getHistory(projectId: string, limit: number = 50): Promise<GitCommit[]> {
-    const gitState = this.getGitState(projectId);
-    if (!gitState) {
-      return [];
-    }
-
-    return gitState.commits.slice(-limit).reverse();
-  }
-
-  // Create new branch
-  async createBranch(projectId: string, branchName: string, fromBranch?: string): Promise<void> {
-    const gitState = this.getGitState(projectId);
-    if (!gitState) {
-      throw new Error('Git not initialized for this project');
-    }
-
-    if (gitState.branches[branchName]) {
-      throw new Error(`Branch '${branchName}' already exists`);
-    }
-
-    const sourceBranch = fromBranch || gitState.currentBranch;
-    const sourceHead = gitState.branches[sourceBranch]?.head;
-
-    if (!sourceHead) {
-      throw new Error(`Source branch '${sourceBranch}' not found`);
-    }
-
-    gitState.branches[branchName] = {
-      name: branchName,
-      head: sourceHead,
-      commits: [...(gitState.branches[sourceBranch]?.commits || [])]
-    };
-
-    this.saveGitState(projectId, gitState);
-  }
-
-  // Switch branch
-  async switchBranch(projectId: string, branchName: string): Promise<void> {
-    const gitState = this.getGitState(projectId);
-    if (!gitState) {
-      throw new Error('Git not initialized for this project');
-    }
-
-    if (!gitState.branches[branchName]) {
-      throw new Error(`Branch '${branchName}' not found`);
-    }
-
-    gitState.currentBranch = branchName;
-    this.saveGitState(projectId, gitState);
-  }
-
-  // Get current branch
-  async getCurrentBranch(projectId: string): Promise<string> {
-    const gitState = this.getGitState(projectId);
-    return gitState?.currentBranch || 'main';
-  }
-
-  // Detect changes since last commit
-  private async detectChangesSinceCommit(
-    projectId: string, 
-    currentFiles: ProjectFile[], 
-    sinceCommit: GitCommit
-  ): Promise<FileChange[]> {
-    // This would compare current files with the state at the given commit
-    // For simplicity, we'll return all current files as modifications
-    // In a real implementation, this would do proper diffing
-    
-    return currentFiles.map(file => ({
-      type: 'modified' as const,
-      file: file,
-      previousContent: '', // Would be the content from the commit
-      currentContent: file.content
-    }));
-  }
-
-  // Private helper methods
-  private getGitState(projectId: string): any {
+  private saveGitState(projectId: string, state: GitState) {
     try {
-      const stored = localStorage.getItem(`codemend-git-${projectId}`);
-      return stored ? JSON.parse(stored) : null;
-    } catch (error) {
-      console.error('Error reading git state:', error);
-      return null;
+      localStorage.setItem(this.STORAGE_PREFIX + projectId, JSON.stringify(state));
+    } catch (e) {
+      console.error("Git Storage Limit Reached", e);
+      // In production, fallback to IndexedDB
     }
   }
 
-  private saveGitState(projectId: string, state: any): void {
-    localStorage.setItem(`codemend-git-${projectId}`, JSON.stringify(state));
-  }
-
-  private generateCommitId(): string {
-    return Math.random().toString(36).substring(2, 15) + 
-           Math.random().toString(36).substring(2, 15);
+  private generateHash(): string {
+    return Math.random().toString(16).substring(2, 10) + Date.now().toString(16).substring(4);
   }
 }
 
-// Export singleton instance
 export const gitService = GitService.getInstance();
