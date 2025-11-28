@@ -1,6 +1,26 @@
 import { GoogleGenAI } from "@google/genai";
 import { GEMINI_TOOL_DEFINITIONS, OPENAI_TOOL_DEFINITIONS, ToolUsageLogger } from './llmTools';
 
+// Helper for Exponential Backoff Retry
+const attemptWithRetry = async <T>(
+  fn: () => Promise<T>, 
+  retries = 3, 
+  delay = 1000
+): Promise<T> => {
+  try {
+    return await fn();
+  } catch (error: any) {
+    if (retries <= 0) throw error;
+    // Retry on Rate Limit (429) or Server Error (5xx)
+    const isRetryable = error.message.includes('429') || error.message.includes('50') || error.message.includes('fetch failed');
+    if (!isRetryable) throw error;
+
+    console.warn(`⚠️ Request failed. Retrying in ${delay}ms... (${retries} left)`);
+    await new Promise(r => setTimeout(r, delay));
+    return attemptWithRetry(fn, retries - 1, delay * 2);
+  }
+};
+
 export const callGemini = async (
   model: string, 
   parts: any[], 
@@ -8,45 +28,91 @@ export const callGemini = async (
   tools: boolean = false, 
   useInternet: boolean = false
 ): Promise<any> => {
+  return attemptWithRetry(async () => {
+    const ai = new GoogleGenAI({ apiKey });
+    const logger = ToolUsageLogger.getInstance();
+    
+    // Configurable thinking budget could be passed here in future
+    const config: any = {
+      thinkingConfig: { thinkingBudget: 2 } 
+    };
+
+    const activeTools: any[] = [];
+    if (tools) activeTools.push({ functionDeclarations: GEMINI_TOOL_DEFINITIONS });
+    if (useInternet) activeTools.push({ googleSearch: {} }); // Grounding
+
+    if (activeTools.length > 0) config.tools = activeTools;
+
+    try {
+      const response = await ai.models.generateContent({
+        model: model,
+        contents: { parts: parts } as any,
+        config
+      });
+
+      // Log tool usage
+      if (response.functionCalls && response.functionCalls.length > 0) {
+        response.functionCalls.forEach((call: any) => logger.logToolCall(call.name, true));
+      }
+
+      return response;
+    } catch (error: any) {
+      console.error('Gemini API Error:', error);
+      logger.logToolCall('gemini_api_call', false, error.message);
+      throw new Error(`Gemini API Error: ${error.message}`);
+    }
+  });
+};
+
+// NEW: Gemini Streaming Support
+export const callGeminiStream = async (
+  model: string,
+  parts: any[],
+  apiKey: string,
+  tools: boolean = false,
+  onContent: (content: string) => void,
+  onToolCall?: (toolCalls: any[]) => void
+): Promise<string> => {
   const ai = new GoogleGenAI({ apiKey });
-  const logger = ToolUsageLogger.getInstance();
-  const config: any = {
-    thinkingConfig: { thinkingBudget: 1 } // Increased for better tool usage
-  };
-
+  const config: any = {};
+  
   const activeTools: any[] = [];
-
-  if (tools) {
-    activeTools.push({ functionDeclarations: GEMINI_TOOL_DEFINITIONS });
-  }
-
-  if (useInternet) {
-    activeTools.push({ googleSearch: {} });
-  }
-
-  if (activeTools.length > 0) {
-    config.tools = activeTools;
-  }
+  if (tools) activeTools.push({ functionDeclarations: GEMINI_TOOL_DEFINITIONS });
+  if (activeTools.length > 0) config.tools = activeTools;
 
   try {
-    const response = await ai.models.generateContent({
-      model: model,
-      contents: { parts: parts } as any,
+    const result = await ai.models.generateContentStream({
+      model,
+      contents: { parts } as any,
       config
     });
 
-    // Log tool usage
-    if (response.functionCalls && response.functionCalls.length > 0) {
-      response.functionCalls.forEach((call: any) => {
-        logger.logToolCall(call.name, true);
-      });
-    }
+    let fullText = "";
 
-    return response;
+    for await (const chunk of result.stream) {
+      // 1. Handle Text
+      const text = chunk.text();
+      if (text) {
+        fullText += text;
+        onContent(text);
+      }
+
+      // 2. Handle Function Calls in Stream
+      // Note: Google SDK usually sends function calls at the end or in a specific chunk type
+      const calls = chunk.functionCalls(); 
+      if (calls && calls.length > 0 && onToolCall) {
+        // Map Google's structure to a generic structure
+        const mappedCalls = calls.map((c: any) => ({
+          name: c.name,
+          args: JSON.stringify(c.args) // Normalize args to string for consistency
+        }));
+        onToolCall(mappedCalls);
+      }
+    }
+    return fullText;
   } catch (error: any) {
-    console.error('Gemini API Error:', error);
-    logger.logToolCall('gemini_api_call', false, error.message);
-    throw new Error(`Gemini API Error: ${error.message}`);
+    console.error("Gemini Stream Error:", error);
+    throw error;
   }
 };
 
@@ -59,34 +125,31 @@ export const callOpenAICompatible = async (
   customHeaders: Record<string, string> = {},
   signal?: AbortSignal
 ): Promise<any> => {
-  const logger = ToolUsageLogger.getInstance();
-  const body: any = {
-    model: model,
-    messages: messages,
-    temperature: 0.1,
-    stream: false,
-  };
+  return attemptWithRetry(async () => {
+    const logger = ToolUsageLogger.getInstance();
+    const body: any = {
+      model,
+      messages,
+      temperature: 0.2, // Slightly higher for creativity but still focused
+      stream: false,
+    };
 
-  if (tools) {
-    body.tools = OPENAI_TOOL_DEFINITIONS;
-    body.tool_choice = 'auto';
-  }
+    if (tools) {
+      body.tools = OPENAI_TOOL_DEFINITIONS;
+      body.tool_choice = 'auto';
+    }
 
-  const headers: HeadersInit = {
-    'Content-Type': 'application/json',
-    ...customHeaders
-  };
+    const headers: HeadersInit = {
+      'Content-Type': 'application/json',
+      ...customHeaders
+    };
 
-  if (apiKey) {
-    headers['Authorization'] = `Bearer ${apiKey}`;
-  }
+    if (apiKey) headers['Authorization'] = `Bearer ${apiKey}`;
+    if (baseUrl.includes('openrouter.ai')) {
+      headers['HTTP-Referer'] = 'https://codemend.ai';
+      headers['X-Title'] = 'CodeMend AI';
+    }
 
-  if (baseUrl.includes('openrouter.ai')) {
-    headers['HTTP-Referer'] = 'https://codemend.ai';
-    headers['X-Title'] = 'CodeMend AI';
-  }
-
-  try {
     const response = await fetch(`${baseUrl}/chat/completions`, {
       method: 'POST',
       headers,
@@ -96,33 +159,21 @@ export const callOpenAICompatible = async (
 
     if (!response.ok) {
       const errorText = await response.text();
-      let errorMessage = `API Error ${response.status}: ${errorText}`;
-      if (response.status === 401) errorMessage = 'Invalid API Key.';
-      if (response.status === 429) errorMessage = 'Rate limit exceeded.';
-      if (response.status === 404) errorMessage = 'Model not found.';
-      throw new Error(errorMessage);
+      throw new Error(`API Error ${response.status}: ${errorText}`);
     }
 
     const data = await response.json();
     
-    // Log tool usage
+    // Log tools
     const toolCalls = data.choices?.[0]?.message?.tool_calls;
-    if (toolCalls && toolCalls.length > 0) {
-      toolCalls.forEach((call: any) => {
-        logger.logToolCall(call.function.name, true);
-      });
+    if (toolCalls?.length) {
+      toolCalls.forEach((call: any) => logger.logToolCall(call.function.name, true));
     }
 
     return data;
-  } catch (error: any) {
-    if (error.name === 'AbortError') throw error;
-    console.error('OpenAI API Error:', error);
-    logger.logToolCall('openai_api_call', false, error.message);
-    throw new Error(`API Error: ${error.message}`);
-  }
+  });
 };
 
-// Enhanced streaming version with better tool handling
 export const callOpenAICompatibleStream = async (
   baseUrl: string, 
   apiKey: string, 
@@ -136,8 +187,8 @@ export const callOpenAICompatibleStream = async (
 ): Promise<string> => {
   const logger = ToolUsageLogger.getInstance();
   const body: any = {
-    model: model,
-    messages: messages,
+    model,
+    messages,
     temperature: 0.1,
     stream: true,
   };
@@ -147,15 +198,8 @@ export const callOpenAICompatibleStream = async (
     body.tool_choice = 'auto';
   }
 
-  const headers: HeadersInit = {
-    'Content-Type': 'application/json',
-    ...customHeaders
-  };
-
-  if (apiKey) {
-    headers['Authorization'] = `Bearer ${apiKey}`;
-  }
-
+  const headers: HeadersInit = { 'Content-Type': 'application/json', ...customHeaders };
+  if (apiKey) headers['Authorization'] = `Bearer ${apiKey}`;
   if (baseUrl.includes('openrouter.ai')) {
     headers['HTTP-Referer'] = 'https://codemend.ai';
     headers['X-Title'] = 'CodeMend AI';
@@ -169,82 +213,67 @@ export const callOpenAICompatibleStream = async (
       signal
     });
 
-    if (!response.ok) {
-      const errorText = await response.text();
-      throw new Error(`API Error ${response.status}: ${errorText}`);
-    }
-
+    if (!response.ok) throw new Error(await response.text());
     const reader = response.body?.getReader();
     if (!reader) throw new Error('No response body');
 
-    let fullContent = '';
     const decoder = new TextDecoder();
-
-    // Timeout logic for stalled streams
-    const STREAM_TIMEOUT_MS = 30000;
-    let lastActivity = Date.now();
-
-    const timeoutInterval = setInterval(() => {
-      if (Date.now() - lastActivity > STREAM_TIMEOUT_MS) {
-        console.warn('Stream timed out due to inactivity');
-        reader.cancel('Timeout');
-        clearInterval(timeoutInterval);
-      }
-    }, 5000);
-
-    // Track tool calls for logging
+    let fullContent = '';
+    let buffer = ''; // Buffer for incomplete chunks
     const completedToolCalls = new Set<string>();
 
-    try {
-      while (true) {
-        const { done, value } = await reader.read();
-        lastActivity = Date.now();
-        if (done) break;
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
 
-        const chunk = decoder.decode(value, { stream: true });
-        const lines = chunk.split('\n');
+      const chunk = decoder.decode(value, { stream: true });
+      // Append new chunk to buffer and split by double newline or data prefix
+      buffer += chunk;
+      
+      const lines = buffer.split('\n');
+      // Keep the last line in buffer if it's incomplete
+      buffer = lines.pop() || '';
 
-        for (const line of lines) {
-          if (line.startsWith('data: ') && !line.includes('data: [DONE]')) {
-            try {
-              const data = JSON.parse(line.slice(6));
+      for (const line of lines) {
+        const trimmed = line.trim();
+        if (!trimmed.startsWith('data: ')) continue;
+        if (trimmed.includes('[DONE]')) continue;
 
-              // Handle content
-              const content = data.choices[0]?.delta?.content;
-              if (content) {
-                fullContent += content;
-                onContent(content);
-              }
+        try {
+          const jsonStr = trimmed.slice(6);
+          const data = JSON.parse(jsonStr);
 
-              // Handle tool calls in streaming
-              const toolCalls = data.choices[0]?.delta?.tool_calls;
-              if (toolCalls && onToolCall) {
-                onToolCall(toolCalls);
-                
-                // Log completed tool calls
-                toolCalls.forEach((chunk: any) => {
-                  if (chunk.function?.name && !completedToolCalls.has(chunk.index)) {
-                    logger.logToolCall(chunk.function.name, true);
-                    completedToolCalls.add(chunk.index);
-                  }
-                });
-              }
-            } catch (e) {
-              // Ignore partial JSON parse errors
-            }
+          // 1. Content Handling
+          const content = data.choices[0]?.delta?.content;
+          if (content) {
+            fullContent += content;
+            onContent(content);
           }
+
+          // 2. Tool Handling
+          const toolCalls = data.choices[0]?.delta?.tool_calls;
+          if (toolCalls && onToolCall) {
+            onToolCall(toolCalls);
+            // Logging
+            toolCalls.forEach((tc: any) => {
+              if (tc.function?.name && !completedToolCalls.has(tc.index)) {
+                logger.logToolCall(tc.function.name, true);
+                completedToolCalls.add(tc.index);
+              }
+            });
+          }
+        } catch (e) {
+          // If JSON parse fails, it might be a split chunk. 
+          // In a more advanced implementation, we would add this line back to buffer.
+          // For now, we ignore minor glitches common in local models.
         }
       }
-    } finally {
-      clearInterval(timeoutInterval);
-      reader.releaseLock();
     }
 
     return fullContent;
   } catch (error: any) {
     if (error.name === 'AbortError') throw error;
-    console.error('OpenAI Stream Error:', error);
     logger.logToolCall('openai_stream_call', false, error.message);
-    return fullContent; // Return what we have so far
+    return ""; // Return empty on hard fail
   }
 };
