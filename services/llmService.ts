@@ -139,7 +139,7 @@ CRITICAL TOOL USAGE RULES:
 3. When user asks to SEARCH code → call search_files tool
 4. When you need to READ a specific file → call read_file tool
 5. When user teaches you something NEW or you discover useful patterns → call save_knowledge tool
-6. NEVER describe what you will do - EXECUTE the tools directly
+6. DO NOT EXPLAIN what you are going to do. CALL THE TOOL DIRECTLY. 
 7. If tool fails, try again with corrected parameters
 
 AVAILABLE TOOLS: create_file, update_file, search_files, read_file, save_knowledge, manage_tasks
@@ -148,16 +148,14 @@ KNOWLEDGE SAVING GUIDELINES:
 - Save user preferences (coding style, architecture choices, tool preferences)
 - Save project-specific patterns and conventions
 - Save learned concepts and best practices
-- Save technical decisions and their reasoning
-- Use #global tag for cross-project knowledge
-- Use #project tag for current project specifics
-- Use #user tag for personal preferences
 ` : '';
 
   return `
 ${coderRole?.systemPrompt || 'You are an expert AI coding assistant that learns and remembers across sessions.'}
 
 MODE: ${mode === 'FIX' ? 'Execute code changes and fixes' : 'Explain and answer questions'}
+VERBOSITY: LOW (Be concise. Act immediately.)
+
 ${fileContext}
 ${knowledgeContext}
 
@@ -166,13 +164,11 @@ USER REQUEST: ${currentMessage}
 ${toolInstructions}
 
 RESPONSE GUIDELINES:
-- Be direct and action-oriented
-- If changes are needed, USE THE TOOLS immediately
+- Be direct and action-oriented. 
+- Avoid chatter. If a tool is needed, use it as the VERY FIRST part of your response.
 - Save important learnings using save_knowledge tool
 - Reference previous knowledge when relevant
-- Provide clear explanations only after executing actions
 - When fixing code, show the complete fixed file content
-- If unsure, ask clarifying questions
 `;
 };
 
@@ -183,17 +179,22 @@ const executeToolAction = (
   args: any, 
   files: ProjectFile[], 
   logger: ToolUsageLogger,
-  knowledgeManager: KnowledgeManager
+  knowledgeManager: KnowledgeManager,
+  onStatusUpdate?: (status: string) => void
 ): { output: string; change?: FileDiff } => {
   
   let toolOutput = "";
   let change: FileDiff | undefined;
+
+  // Visual feedback for the tool action
+  if (onStatusUpdate) onStatusUpdate(`⚡ Executing ${toolName}...`);
 
   try {
     if (toolName === 'update_file') {
       if (isFileProtected(args.name)) {
         toolOutput = `Error: Cannot modify protected file "${args.name}" for security reasons.`;
         logger.logToolCall('update_file', false, `Blocked write to ${args.name}`);
+        if (onStatusUpdate) onStatusUpdate(`🚫 Blocked write to ${args.name}`);
       } else {
         const existing = files.find(f => f.name === args.name);
         if (existing) {
@@ -206,6 +207,7 @@ const executeToolAction = (
           };
           toolOutput = `Success: Prepared update for ${args.name}.`;
           logger.logToolCall('update_file', true, `Updated ${args.name}`);
+          if (onStatusUpdate) onStatusUpdate(`📝 Updated ${args.name}`);
         } else {
           toolOutput = `Error: File "${args.name}" not found. Please use create_file or check the name.`;
           logger.logToolCall('update_file', false, `File not found: ${args.name}`);
@@ -225,15 +227,18 @@ const executeToolAction = (
         };
         toolOutput = `Success: Prepared creation of ${args.name}.`;
         logger.logToolCall('create_file', true, `Created ${args.name}`);
+        if (onStatusUpdate) onStatusUpdate(`✨ Created ${args.name}`);
       }
 
     } else if (toolName === 'search_files') {
+      if (onStatusUpdate) onStatusUpdate(`🔍 Searching for "${args.query}"...`);
       const results = performSearch(args.query, files);
       toolOutput = `Search Results for "${args.query}":\n${results.map(r => `- ${r.fileName}:${r.line} ${r.content}`).join('\n')}`;
       if (results.length === 0) toolOutput = "No matches found.";
       logger.logToolCall('search_files', true, `Found ${results.length} results`);
 
     } else if (toolName === 'read_file') {
+      if (onStatusUpdate) onStatusUpdate(`📖 Reading ${args.fileName}...`);
       const f = files.find(file => file.name === args.fileName);
       if (f) {
         toolOutput = `Content of ${f.name}:\n\`\`\`${f.language}\n${f.content}\n\`\`\``;
@@ -244,6 +249,7 @@ const executeToolAction = (
       }
 
     } else if (toolName === 'save_knowledge') {
+      if (onStatusUpdate) onStatusUpdate(`💾 Saving knowledge...`);
       knowledgeManager.saveKnowledge(
         args.tags,
         args.content,
@@ -473,8 +479,6 @@ export const streamFixCodeWithGemini = async (
   let apiKey = llmConfig.apiKey || '';
   let baseUrl = llmConfig.baseUrl || '';
 
-  // Currently, the multi-turn logic below is optimized for OpenAI/Local compatible streams.
-  // Gemini streaming has a different SDK signature.
   if (isGemini) {
     callbacks.onError('Streaming with multi-turn tools is not fully supported for Gemini in this version. Please use non-streaming mode.');
     return;
@@ -530,11 +534,19 @@ export const streamFixCodeWithGemini = async (
     let activeAgentModel = llmConfig.chatModelId || llmConfig.activeModelId;
     let turnCount = 0;
     let keepGoing = true;
-    let fullTextResponse = "";
+    
+    // Tracks what we actually sent to the user via callbacks to avoid glitches/duplication
+    let accumulatedGlobalStream = ""; 
 
     // --- AGENT STREAMING LOOP ---
     while (keepGoing && turnCount < MAX_AGENT_TURNS) {
       turnCount++;
+      
+      // Update status to show activity
+      if (callbacks.onStatusUpdate) {
+        callbacks.onStatusUpdate(turnCount === 1 ? "🧠 Analyzing..." : "🤔 Processing results...");
+      }
+
       let turnTextResponse = "";
       let accumulatedToolCalls: Record<number, { name: string, args: string, id: string }> = {};
 
@@ -548,7 +560,7 @@ export const streamFixCodeWithGemini = async (
         (isLocal ? getLocalProviderConfig('custom', baseUrl).customHeaders : {}),
         (content) => {
           turnTextResponse += content;
-          fullTextResponse += content;
+          accumulatedGlobalStream += content;
           callbacks.onContent(content); // Stream text to UI immediately
         },
         (toolCallChunks) => {
@@ -563,13 +575,11 @@ export const streamFixCodeWithGemini = async (
             if (chunk.function?.arguments) accumulatedToolCalls[index].args += chunk.function.arguments;
 
             if (chunk.function?.name && callbacks.onStatusUpdate) {
-               // Only update status on first detection of name to avoid flicker
+               // Update status immediately when a tool is detected
                const toolName = chunk.function.name;
-               if (!accumulatedToolCalls[index].name.includes(toolName.slice(0, -1))) {
-                 if (toolName === 'search_files') callbacks.onStatusUpdate("🔍 Searching...");
-                 if (toolName === 'create_file') callbacks.onStatusUpdate("📝 Creating...");
-                 if (toolName === 'update_file') callbacks.onStatusUpdate("🔨 Fix applied...");
-                 if (toolName === 'read_file') callbacks.onStatusUpdate("📖 Reading...");
+               // Debounce/Check if name is somewhat complete to avoid flickering
+               if (toolName.length > 3 && !accumulatedToolCalls[index].name.includes(toolName.slice(0, -1))) {
+                 callbacks.onStatusUpdate(`🛠️ Preparing ${toolName}...`);
                }
             }
           });
@@ -582,9 +592,10 @@ export const streamFixCodeWithGemini = async (
 
       if (toolCallsInThisTurn.length === 0) {
         keepGoing = false; // No tools called, Agent is done
+        if (callbacks.onStatusUpdate) callbacks.onStatusUpdate("✅ Response Complete");
       } else {
         // Add Assistant's thoughts/calls to history so it remembers what it did
-        messages.push({ role: 'assistant', content: turnTextResponse }); // Note: Strict OpenAI requires tool_calls object here too, but generic locals often tolerate just content.
+        messages.push({ role: 'assistant', content: turnTextResponse });
 
         // Execute Tools
         for (const tc of toolCallsInThisTurn) {
@@ -597,18 +608,26 @@ export const streamFixCodeWithGemini = async (
                callbacks.onToolCalls([{ id: tc.id || generateUUID(), name: tc.name, args }]);
              }
 
-             // Execute logic
-             const { output, change } = executeToolAction(tc.name, args, safeAllFiles, logger, knowledgeManager);
+             // Execute logic with Status Update Callback
+             const { output, change } = executeToolAction(
+                tc.name, 
+                args, 
+                safeAllFiles, 
+                logger, 
+                knowledgeManager, 
+                callbacks.onStatusUpdate // Pass the callback down!
+             );
 
              // Emit changes if any
              if (change && callbacks.onProposedChanges) {
                 callbacks.onProposedChanges([change]);
                 // Visual feedback in stream
-                callbacks.onContent(`\n\n✅ [Action]: ${tc.name} executed successfully.\n`);
+                const successMsg = `\n> [Action]: ${tc.name} executed successfully.`;
+                accumulatedGlobalStream += successMsg;
+                callbacks.onContent(successMsg);
              }
 
              // 3. Feed result back to LLM
-             // For generic compatibility, we often use user role with a system prefix.
              messages.push({ 
                role: 'user', 
                content: `[Tool Result for ${tc.name}]: ${output}` 
@@ -617,13 +636,16 @@ export const streamFixCodeWithGemini = async (
           } catch (e: any) {
             console.error("Tool execution failed in stream:", e);
             messages.push({ role: 'user', content: `[Tool Error]: ${e.message}` });
+            if (callbacks.onStatusUpdate) callbacks.onStatusUpdate("❌ Tool Error");
           }
         }
         // Loop continues to next turn to let LLM see the tool output and decide next steps
       }
     }
 
-    callbacks.onComplete(fullTextResponse);
+    // Critical: Send the ACCUMULATED stream text as the final complete text.
+    // This prevents the "Message Changed" glitch where the UI might reset to a different state.
+    callbacks.onComplete(accumulatedGlobalStream);
 
   } catch (error: any) {
     logger.logToolCall('stream_service', false, error.message);
