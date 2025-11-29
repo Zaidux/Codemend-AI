@@ -29,7 +29,7 @@ const safeJsonParse = (jsonStr: string): any => {
   
   // 1. Strip Markdown code blocks if present
   let cleanStr = jsonStr.replace(/```json\n?|```/g, '').trim();
-
+  
   // 2. Simple Parse Attempt
   try {
     return JSON.parse(cleanStr);
@@ -38,12 +38,8 @@ const safeJsonParse = (jsonStr: string): any => {
     try {
       // Fix trailing commas in objects/arrays
       cleanStr = cleanStr.replace(/,\s*}/g, '}').replace(/,\s*]/g, ']');
-      
       // Escape unescaped newlines inside string values
-      // This regex looks for newlines that aren't preceded by an escape slash, within quotes
-      // Note: Perfect regex for JSON strings is hard, this is a heuristic improvement
       cleanStr = cleanStr.replace(/\n/g, '\\n').replace(/\r/g, '');
-
       return JSON.parse(cleanStr);
     } catch (e2) {
       console.error("JSON Parse Failed:", cleanStr);
@@ -107,10 +103,9 @@ const performSearch = (query: string, files: ProjectFile[]): SearchResult[] => {
   const results: SearchResult[] = [];
   const safeFiles = files || [];
   const lowerQuery = query.toLowerCase();
-
+  
   safeFiles.forEach(f => {
     if (!f || !f.content) return;
-
     const lines = f.content.split('\n');
     lines.forEach((line, index) => {
       if (line.toLowerCase().includes(lowerQuery)) {
@@ -123,6 +118,7 @@ const performSearch = (query: string, files: ProjectFile[]): SearchResult[] => {
       }
     });
   });
+  
   return results.slice(0, 20);
 };
 
@@ -136,7 +132,7 @@ interface StreamingCallbacks {
   onError: (error: string) => void;
 }
 
-// --- ENHANCED PROMPT ENGINEERING ---
+// --- ENHANCED PROMPT ENGINEERING WITH KNOWLEDGE INTEGRATION ---
 const buildSystemPrompt = (
   mode: string,
   fileContext: string,
@@ -147,24 +143,28 @@ const buildSystemPrompt = (
   knowledgeManager: KnowledgeManager,
   isFollowUpTurn: boolean = false
 ): string => {
-  
-  // Speed Optimization: If this is a follow-up turn (e.g. after read_file), 
+  // Speed Optimization: If this is a follow-up turn (e.g. after read_file),
   // FORCE the model to be purely functional and skip pleasantries.
-  const turnInstructions = isFollowUpTurn 
-    ? `URGENT: You are in the middle of a task. Do not explain your reasoning. CALL THE NEXT TOOL IMMEDIATELY.`
-    : `BE CONCISE. Act immediately.`;
+  const turnInstructions = isFollowUpTurn ? 
+    `URGENT: You are in the middle of a task. Do not explain your reasoning. CALL THE NEXT TOOL IMMEDIATELY.` : 
+    `BE CONCISE. Act immediately.`;
 
   const toolInstructions = hasTools ? `
 CRITICAL TOOL USAGE RULES:
 1. When user asks to CREATE a file → IMMEDIATELY call create_file tool
-2. When user asks to MODIFY/UPDATE/FIX code → IMMEDIATELY call update_file tool  
+2. When user asks to MODIFY/UPDATE/FIX code → IMMEDIATELY call update_file tool
 3. When user asks to SEARCH code → call search_files tool
 4. When you need to READ a specific file → call read_file tool. (If you don't know the path, use list_files first)
 5. When user teaches you something NEW or you discover useful patterns → call save_knowledge tool
-6. DO NOT EXPLAIN what you are going to do. CALL THE TOOL DIRECTLY. 
+6. DO NOT EXPLAIN what you are going to do. CALL THE TOOL DIRECTLY.
 7. If tool fails, try again with corrected parameters
 
 AVAILABLE TOOLS: create_file, update_file, delete_file, list_files, search_files, read_file, save_knowledge, manage_tasks
+
+KNOWLEDGE SAVING GUIDELINES:
+- Save user preferences (coding style, architecture choices, tool preferences)
+- Save project-specific patterns and conventions
+- Save learned concepts and best practices
 ` : '';
 
   return `
@@ -179,19 +179,25 @@ ${knowledgeContext}
 USER REQUEST: ${currentMessage}
 
 ${toolInstructions}
+
+RESPONSE GUIDELINES:
+- Be direct and action-oriented.
+- Avoid chatter. If a tool is needed, use it as the VERY FIRST part of your response.
+- Save important learnings using save_knowledge tool
+- Reference previous knowledge when relevant
+- When fixing code, show the complete fixed file content
 `;
 };
 
 // --- SHARED TOOL EXECUTION LOGIC ---
 const executeToolAction = (
-  toolName: string, 
-  args: any, 
-  files: ProjectFile[], 
+  toolName: string,
+  args: any,
+  files: ProjectFile[],
   logger: ToolUsageLogger,
   knowledgeManager: KnowledgeManager,
   onStatusUpdate?: (status: string) => void
 ): { output: string; change?: FileDiff } => {
-  
   let toolOutput = "";
   let change: FileDiff | undefined;
 
@@ -224,7 +230,6 @@ const executeToolAction = (
           logger.logToolCall('update_file', false, `File not found: ${args.name}`);
         }
       }
-
     } else if (toolName === 'create_file') {
       if (isFileProtected(args.name)) {
         toolOutput = `Error: Cannot create protected file "${args.name}".`;
@@ -240,7 +245,6 @@ const executeToolAction = (
         logger.logToolCall('create_file', true, `Created ${args.name}`);
         if (onStatusUpdate) onStatusUpdate(`✨ Created ${args.name}`);
       }
-
     } else if (toolName === 'delete_file') {
       if (isFileProtected(args.name)) {
         toolOutput = `Error: Cannot delete protected file "${args.name}".`;
@@ -261,29 +265,22 @@ const executeToolAction = (
           toolOutput = `Error: File "${args.name}" not found.`;
         }
       }
-
     } else if (toolName === 'list_files') {
       if (onStatusUpdate) onStatusUpdate(`📂 Listing files...`);
       // Simple filtering if path is provided, otherwise all files
-      const relevantFiles = args.path 
-        ? files.filter(f => f.name.startsWith(args.path))
-        : files;
-        
+      const relevantFiles = args.path ? files.filter(f => f.name.startsWith(args.path)) : files;
       const fileList = relevantFiles.map(f => {
-         const lineCount = f.content ? f.content.split('\n').length : 0;
-         return `- ${f.name} (${lineCount} lines)`;
+        const lineCount = f.content ? f.content.split('\n').length : 0;
+        return `- ${f.name} (${lineCount} lines)`;
       }).join('\n');
-      
       toolOutput = `Project Files:\n${fileList || 'No files found.'}`;
       logger.logToolCall('list_files', true, `Listed ${relevantFiles.length} files`);
-
     } else if (toolName === 'search_files') {
       if (onStatusUpdate) onStatusUpdate(`🔍 Searching for "${args.query}"...`);
       const results = performSearch(args.query, files);
       toolOutput = `Search Results for "${args.query}":\n${results.map(r => `- ${r.fileName}:${r.line} ${r.content}`).join('\n')}`;
       if (results.length === 0) toolOutput = "No matches found.";
       logger.logToolCall('search_files', true, `Found ${results.length} results`);
-
     } else if (toolName === 'read_file') {
       if (onStatusUpdate) onStatusUpdate(`📖 Reading ${args.fileName}...`);
       const f = files.find(file => file.name === args.fileName);
@@ -296,7 +293,6 @@ const executeToolAction = (
         toolOutput = `Error: File "${args.fileName}" not found.\n\nHere is a list of ALL valid files in the project. Please pick one from this list:\n${fileList}`;
         logger.logToolCall('read_file', false, `File not found: ${args.fileName} (Sent file list)`);
       }
-
     } else if (toolName === 'save_knowledge') {
       if (onStatusUpdate) onStatusUpdate(`💾 Saving knowledge...`);
       knowledgeManager.saveKnowledge(
@@ -319,30 +315,27 @@ const executeToolAction = (
 
 // --- ORCHESTRATOR (NON-STREAMING) ---
 export const fixCodeWithGemini = async (request: FixRequest): Promise<FixResponse> => {
-  const { 
-    llmConfig, history, currentMessage, allFiles, activeFile, mode, attachments, 
-    roles, knowledgeBase, useInternet, currentTodos, projectSummary, useCompression, contextTransfer 
-  } = request;
-
+  const { llmConfig, history, currentMessage, allFiles, activeFile, mode, attachments, roles, knowledgeBase, useInternet, currentTodos, projectSummary, useCompression, contextTransfer } = request;
   const logger = ToolUsageLogger.getInstance();
   const knowledgeManager = KnowledgeManager.getInstance();
-
+  
   if (knowledgeBase) knowledgeManager.loadKnowledge(knowledgeBase);
+  
   if (!llmConfig) return { response: "", error: "Missing LLM configuration" };
   if (!currentMessage?.trim()) return { response: "", error: "Empty message" };
 
   const safeAllFiles = allFiles || [];
   const safeActiveFile = activeFile || safeAllFiles[0];
   const safeHistory = history || [];
-
+  
   if (!safeActiveFile) return { response: "", error: "No active file available" };
 
   const isGemini = llmConfig.provider === 'gemini';
   const isLocal = llmConfig.provider === 'local';
-
+  
   let apiKey = llmConfig.apiKey || '';
   let baseUrl = llmConfig.baseUrl || '';
-
+  
   if (isLocal) {
     const localConfig = getLocalProviderConfig('custom', baseUrl);
     baseUrl = localConfig.baseUrl || baseUrl;
@@ -356,9 +349,10 @@ export const fixCodeWithGemini = async (request: FixRequest): Promise<FixRespons
   // Context and Compression
   const totalChars = safeAllFiles.reduce((acc, f) => acc + (f.content?.length || 0), 0);
   const shouldCompress = useCompression || (totalChars > LAZY_LOAD_THRESHOLD && !request.useHighCapacity);
+  
   let fileContext = "";
   let usedCompression = false;
-
+  
   if (shouldCompress && projectSummary) {
     usedCompression = true;
     const compressionConfig = llmConfig.compression || { enabled: true, maxFiles: 15, maxFileSize: 50000, autoSummarize: true, preserveStructure: true };
@@ -371,7 +365,6 @@ export const fixCodeWithGemini = async (request: FixRequest): Promise<FixRespons
   // Knowledge Retrieval
   const messageTokens = currentMessage.toLowerCase().split(/[\s,.]+/);
   const tagsInMessage: string[] = currentMessage.match(/#[\w-]+/g) || [];
-
   const relevantKnowledge = (knowledgeBase || []).filter(entry => {
     if (!entry.tags) return false;
     if (entry.tags.some(tag => tagsInMessage.includes(tag))) return true;
@@ -381,21 +374,20 @@ export const fixCodeWithGemini = async (request: FixRequest): Promise<FixRespons
       return messageTokens.includes(bareTag) || bareTag.split('-').every(part => messageTokens.includes(part));
     });
   });
-
+  
   const knowledgeContext = relevantKnowledge.length > 0 ? 
     `\nRELEVANT KNOWLEDGE/PREFERENCES:\n${relevantKnowledge.map(k => `- ${k.content} [${k.tags.join(', ')}]`).join('\n')}` : "";
 
   const coderRole = (roles || []).find(r => r.id === llmConfig.coderRoleId) || (roles || [])[1];
-
   let activeAgentModel = llmConfig.chatModelId || llmConfig.coderModelId || llmConfig.activeModelId;
   if (!activeAgentModel) return { response: "", error: "No active model configured." };
 
   const systemInstruction = buildSystemPrompt(
-    mode, 
-    fileContext, 
-    knowledgeContext, 
-    currentMessage, 
-    coderRole, 
+    mode,
+    fileContext,
+    knowledgeContext,
+    currentMessage,
+    coderRole,
     true,
     knowledgeManager
   );
@@ -403,32 +395,30 @@ export const fixCodeWithGemini = async (request: FixRequest): Promise<FixRespons
   let finalResponseText = "";
   const allProposedChanges: FileDiff[] = [];
   const allToolCalls: ToolCall[] = [];
-
+  
   let conversationMessages: any[] = [];
-
+  
   if (isGemini) {
     conversationMessages = [
-        { text: systemInstruction },
-        ...safeHistory.slice(-4).map(msg => ({ text: `${msg.role === 'user' ? 'USER' : 'ASSISTANT'}: ${msg.content}` })),
-        { text: `USER: ${currentMessage}` }
+      { text: systemInstruction },
+      ...safeHistory.slice(-4).map(msg => ({ text: `${msg.role === 'user' ? 'USER' : 'ASSISTANT'}: ${msg.content}` })),
+      { text: `USER: ${currentMessage}` }
     ];
   } else {
     conversationMessages = [
-      { role: 'system', content: systemInstruction }, 
-      ...safeHistory.slice(-4).map(h => ({ 
-        role: h.role === 'model' ? 'assistant' : 'user', 
-        content: h.content 
-      })), 
+      { role: 'system', content: systemInstruction },
+      ...safeHistory.slice(-4).map(h => ({ role: h.role === 'model' ? 'assistant' : 'user', content: h.content })),
       { role: 'user', content: currentMessage }
     ];
   }
 
   let turnCount = 0;
   let keepGoing = true;
-
+  
   try {
     while (keepGoing && turnCount < MAX_AGENT_TURNS) {
       turnCount++;
+      
       let currentResponseText = "";
       let currentToolCalls: any[] = [];
 
@@ -439,7 +429,11 @@ export const fixCodeWithGemini = async (request: FixRequest): Promise<FixRespons
         if (res.functionCalls) currentToolCalls = res.functionCalls;
       } else {
         const res = await callOpenAICompatible(
-          baseUrl, apiKey, activeAgentModel, conversationMessages, true, 
+          baseUrl,
+          apiKey,
+          activeAgentModel,
+          conversationMessages,
+          true,
           (isLocal ? getLocalProviderConfig('custom', baseUrl).customHeaders : {})
         );
         const message = res.choices?.[0]?.message;
@@ -453,7 +447,7 @@ export const fixCodeWithGemini = async (request: FixRequest): Promise<FixRespons
       }
 
       finalResponseText += currentResponseText;
-
+      
       if (currentToolCalls.length === 0) {
         keepGoing = false;
         break;
@@ -469,9 +463,9 @@ export const fixCodeWithGemini = async (request: FixRequest): Promise<FixRespons
       for (const fc of currentToolCalls) {
         const args = typeof fc.args === 'string' ? safeJsonParse(fc.args) : (fc.args || {});
         const toolCall: ToolCall = {
-            id: 'call_' + Math.random().toString(36).substr(2, 9),
-            name: fc.name,
-            args: args
+          id: 'call_' + Math.random().toString(36).substr(2, 9),
+          name: fc.name,
+          args: args
         };
         allToolCalls.push(toolCall);
 
@@ -481,18 +475,18 @@ export const fixCodeWithGemini = async (request: FixRequest): Promise<FixRespons
 
         // Add Tool Result to History
         if (isGemini) {
-            conversationMessages.push({ text: `TOOL_OUTPUT (${fc.name}): ${output}` });
+          conversationMessages.push({ text: `TOOL_OUTPUT (${fc.name}): ${output}` });
         } else {
-            conversationMessages.push({ role: 'user', content: `[System Tool Output for ${fc.name}]: ${output}` });
+          conversationMessages.push({ role: 'user', content: `[System Tool Output for ${fc.name}]: ${output}` });
         }
-      } 
+      }
     }
 
-    return { 
-      response: finalResponseText.trim(), 
-      toolCalls: allToolCalls.length > 0 ? allToolCalls : undefined, 
-      proposedChanges: allProposedChanges, 
-      contextSummarized: usedCompression 
+    return {
+      response: finalResponseText.trim(),
+      toolCalls: allToolCalls.length > 0 ? allToolCalls : undefined,
+      proposedChanges: allProposedChanges,
+      contextSummarized: usedCompression
     };
   } catch (error: any) {
     logger.logToolCall('llm_service', false, error.message);
@@ -506,15 +500,12 @@ export const streamFixCodeWithGemini = async (
   callbacks: StreamingCallbacks,
   signal?: AbortSignal
 ): Promise<void> => {
-  const { 
-    llmConfig, history, currentMessage, allFiles, activeFile, mode, 
-    roles, knowledgeBase, useCompression, projectSummary
-  } = request;
-
+  const { llmConfig, history, currentMessage, allFiles, activeFile, mode, roles, knowledgeBase, useCompression, projectSummary } = request;
   const logger = ToolUsageLogger.getInstance();
   const knowledgeManager = KnowledgeManager.getInstance();
-
+  
   if (knowledgeBase) knowledgeManager.loadKnowledge(knowledgeBase);
+  
   if (!llmConfig || !currentMessage) {
     callbacks.onError("Configuration or message missing.");
     return;
@@ -522,17 +513,18 @@ export const streamFixCodeWithGemini = async (
 
   const safeAllFiles = allFiles || [];
   const safeActiveFile = activeFile || safeAllFiles[0];
-
+  
   const isGemini = llmConfig.provider === 'gemini';
   const isLocal = llmConfig.provider === 'local';
+  
   let apiKey = llmConfig.apiKey || '';
   let baseUrl = llmConfig.baseUrl || '';
-
+  
   if (isGemini) {
     callbacks.onError('Streaming with multi-turn tools is not fully supported for Gemini in this version. Please use non-streaming mode.');
     return;
   }
-
+  
   if (isLocal) {
     const localConfig = getLocalProviderConfig('custom', baseUrl);
     baseUrl = localConfig.baseUrl || baseUrl;
@@ -554,25 +546,27 @@ export const streamFixCodeWithGemini = async (
     const messageTokens = currentMessage.toLowerCase().split(/[\s,.]+/);
     const tagsInMessage: string[] = currentMessage.match(/#[\w-]+/g) || [];
     const relevantKnowledge = (knowledgeBase || []).filter(entry => {
-        if (!entry.tags) return false;
-        if (entry.tags.some(tag => tagsInMessage.includes(tag))) return true;
-        if (entry.tags.includes('#global')) return true;
-        return entry.tags.some(tag => {
-            const bareTag = tag.replace('#', '').toLowerCase();
-            return messageTokens.includes(bareTag) || bareTag.split('-').every(part => messageTokens.includes(part));
-        });
+      if (!entry.tags) return false;
+      if (entry.tags.some(tag => tagsInMessage.includes(tag))) return true;
+      if (entry.tags.includes('#global')) return true;
+      return entry.tags.some(tag => {
+        const bareTag = tag.replace('#', '').toLowerCase();
+        return messageTokens.includes(bareTag) || bareTag.split('-').every(part => messageTokens.includes(part));
+      });
     });
+    
+    const knowledgeContext = relevantKnowledge.length > 0 ? 
+      `\nRELEVANT KNOWLEDGE:\n${relevantKnowledge.map(k => `- ${k.content}`).join('\n')}` : "";
 
-    const knowledgeContext = relevantKnowledge.length > 0 ? `\nRELEVANT KNOWLEDGE:\n${relevantKnowledge.map(k => `- ${k.content}`).join('\n')}` : "";
     const coderRole = (roles || []).find(r => r.id === llmConfig.coderRoleId) || (roles || [])[1];
-
     let activeAgentModel = llmConfig.chatModelId || llmConfig.activeModelId;
+    
     let turnCount = 0;
     let keepGoing = true;
     
     // Tracks what we actually sent to the user via callbacks to avoid glitches/duplication
-    let accumulatedGlobalStream = ""; 
-    
+    let accumulatedGlobalStream = "";
+
     // Conversation history container
     const messages = [
       { role: 'system', content: '' }, // Placeholder for dynamic system prompt
@@ -590,7 +584,13 @@ export const streamFixCodeWithGemini = async (
       // Update dynamic system prompt for this turn
       // If turnCount > 1, we want MAXIMUM SPEED (no explanations)
       messages[0].content = buildSystemPrompt(
-        mode, fileContext, knowledgeContext, currentMessage, coderRole, true, knowledgeManager, 
+        mode,
+        fileContext,
+        knowledgeContext,
+        currentMessage,
+        coderRole,
+        true,
+        knowledgeManager,
         turnCount > 1 // isFollowUpTurn
       );
 
@@ -604,10 +604,10 @@ export const streamFixCodeWithGemini = async (
 
       // 1. Call Stream for current turn
       await callOpenAICompatibleStream(
-        baseUrl, 
-        apiKey, 
-        activeAgentModel, 
-        messages, 
+        baseUrl,
+        apiKey,
+        activeAgentModel,
+        messages,
         true, // Tools enabled
         (isLocal ? getLocalProviderConfig('custom', baseUrl).customHeaders : {}),
         (content) => {
@@ -625,14 +625,14 @@ export const streamFixCodeWithGemini = async (
             if (chunk.id) accumulatedToolCalls[index].id = chunk.id;
             if (chunk.function?.name) accumulatedToolCalls[index].name += chunk.function.name;
             if (chunk.function?.arguments) accumulatedToolCalls[index].args += chunk.function.arguments;
-
+            
             if (chunk.function?.name && callbacks.onStatusUpdate) {
-               // Update status immediately when a tool is detected
-               const toolName = chunk.function.name;
-               // Debounce/Check if name is somewhat complete to avoid flickering
-               if (toolName.length > 3 && !accumulatedToolCalls[index].name.includes(toolName.slice(0, -1))) {
-                 callbacks.onStatusUpdate(`🛠️ Preparing ${toolName}...`);
-               }
+              // Update status immediately when a tool is detected
+              const toolName = chunk.function.name;
+              // Debounce/Check if name is somewhat complete to avoid flickering
+              if (toolName.length > 3 && !accumulatedToolCalls[index].name.includes(toolName.slice(0, -1))) {
+                callbacks.onStatusUpdate(`🛠️ Preparing ${toolName}...`);
+              }
             }
           });
         },
@@ -641,7 +641,7 @@ export const streamFixCodeWithGemini = async (
 
       // 2. Process Tools for this turn
       const toolCallsInThisTurn = Object.values(accumulatedToolCalls);
-
+      
       if (toolCallsInThisTurn.length === 0) {
         keepGoing = false; // No tools called, Agent is done
         if (callbacks.onStatusUpdate) callbacks.onStatusUpdate("✅ Response Complete");
@@ -652,39 +652,37 @@ export const streamFixCodeWithGemini = async (
         // Execute Tools
         for (const tc of toolCallsInThisTurn) {
           try {
-             if (!tc.name) continue;
-             const args = tc.args ? safeJsonParse(tc.args) : {};
-             
-             // Emit parsed tool call for UI tracking
-             if (callbacks.onToolCalls) {
-               callbacks.onToolCalls([{ id: tc.id || generateUUID(), name: tc.name, args }]);
-             }
+            if (!tc.name) continue;
+            
+            const args = tc.args ? safeJsonParse(tc.args) : {};
+            
+            // Emit parsed tool call for UI tracking
+            if (callbacks.onToolCalls) {
+              callbacks.onToolCalls([{ id: tc.id || generateUUID(), name: tc.name, args }]);
+            }
 
-             // Execute logic with Status Update Callback
-             const { output, change } = executeToolAction(
-                tc.name, 
-                args, 
-                safeAllFiles, 
-                logger, 
-                knowledgeManager, 
-                callbacks.onStatusUpdate // Pass the callback down!
-             );
+            // Execute logic with Status Update Callback
+            const { output, change } = executeToolAction(
+              tc.name,
+              args,
+              safeAllFiles,
+              logger,
+              knowledgeManager,
+              callbacks.onStatusUpdate // Pass the callback down!
+            );
 
-             // Emit changes if any
-             if (change && callbacks.onProposedChanges) {
-                callbacks.onProposedChanges([change]);
-                // Visual feedback in stream
-                const successMsg = `\n> [Action]: ${tc.name} executed successfully.`;
-                accumulatedGlobalStream += successMsg;
-                callbacks.onContent(successMsg);
-             }
+            // Emit changes if any
+            if (change && callbacks.onProposedChanges) {
+              callbacks.onProposedChanges([change]);
+              // Visual feedback in stream
+              const successMsg = `\n> [Action]: ${tc.name} executed successfully.`;
+              accumulatedGlobalStream += successMsg;
+              callbacks.onContent(successMsg);
+            }
 
-             // 3. Feed result back to LLM
-             messages.push({ 
-               role: 'user', 
-               content: `[Tool Result for ${tc.name}]: ${output}` 
-             });
-
+            // 3. Feed result back to LLM
+            messages.push({ role: 'user', content: `[Tool Result for ${tc.name}]: ${output}` });
+            
           } catch (e: any) {
             console.error("Tool execution failed in stream:", e);
             messages.push({ role: 'user', content: `[Tool Error]: ${e.message}` });
@@ -697,7 +695,7 @@ export const streamFixCodeWithGemini = async (
 
     // Critical: Send the ACCUMULATED stream text as the final complete text.
     callbacks.onComplete(accumulatedGlobalStream);
-
+    
   } catch (error: any) {
     logger.logToolCall('stream_service', false, error.message);
     if (error.name !== 'AbortError') callbacks.onError(error.message);
