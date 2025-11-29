@@ -23,17 +23,31 @@ const isFileProtected = (fileName: string): boolean => {
   return PROTECTED_FILES.some(protectedStr => fileName.includes(protectedStr));
 };
 
-// Robust JSON Parser for Local Models
+// --- ROBUST JSON PARSER ---
 const safeJsonParse = (jsonStr: string): any => {
+  if (!jsonStr) return {};
+  
+  // 1. Strip Markdown code blocks if present
+  let cleanStr = jsonStr.replace(/```json\n?|```/g, '').trim();
+
+  // 2. Simple Parse Attempt
   try {
-    return JSON.parse(jsonStr);
+    return JSON.parse(cleanStr);
   } catch (e) {
-    // Attempt simple fix for common local model errors (trailing commas)
+    // 3. Advanced Sanitation for Common LLM Errors
     try {
-      const fixed = jsonStr.replace(/,\s*}/g, '}').replace(/,\s*]/g, ']');
-      return JSON.parse(fixed);
+      // Fix trailing commas in objects/arrays
+      cleanStr = cleanStr.replace(/,\s*}/g, '}').replace(/,\s*]/g, ']');
+      
+      // Escape unescaped newlines inside string values
+      // This regex looks for newlines that aren't preceded by an escape slash, within quotes
+      // Note: Perfect regex for JSON strings is hard, this is a heuristic improvement
+      cleanStr = cleanStr.replace(/\n/g, '\\n').replace(/\r/g, '');
+
+      return JSON.parse(cleanStr);
     } catch (e2) {
-      throw new Error(`Invalid JSON format: ${jsonStr.substring(0, 50)}...`);
+      console.error("JSON Parse Failed:", cleanStr);
+      throw new Error(`Invalid JSON format. Logic failed to repair: ${jsonStr.substring(0, 50)}...`);
     }
   }
 };
@@ -122,7 +136,7 @@ interface StreamingCallbacks {
   onError: (error: string) => void;
 }
 
-// --- ENHANCED PROMPT ENGINEERING WITH KNOWLEDGE INTEGRATION ---
+// --- ENHANCED PROMPT ENGINEERING ---
 const buildSystemPrompt = (
   mode: string,
   fileContext: string,
@@ -130,8 +144,16 @@ const buildSystemPrompt = (
   currentMessage: string,
   coderRole: any,
   hasTools: boolean,
-  knowledgeManager: KnowledgeManager
+  knowledgeManager: KnowledgeManager,
+  isFollowUpTurn: boolean = false
 ): string => {
+  
+  // Speed Optimization: If this is a follow-up turn (e.g. after read_file), 
+  // FORCE the model to be purely functional and skip pleasantries.
+  const turnInstructions = isFollowUpTurn 
+    ? `URGENT: You are in the middle of a task. Do not explain your reasoning. CALL THE NEXT TOOL IMMEDIATELY.`
+    : `BE CONCISE. Act immediately.`;
+
   const toolInstructions = hasTools ? `
 CRITICAL TOOL USAGE RULES:
 1. When user asks to CREATE a file → IMMEDIATELY call create_file tool
@@ -143,18 +165,13 @@ CRITICAL TOOL USAGE RULES:
 7. If tool fails, try again with corrected parameters
 
 AVAILABLE TOOLS: create_file, update_file, delete_file, list_files, search_files, read_file, save_knowledge, manage_tasks
-
-KNOWLEDGE SAVING GUIDELINES:
-- Save user preferences (coding style, architecture choices, tool preferences)
-- Save project-specific patterns and conventions
-- Save learned concepts and best practices
 ` : '';
 
   return `
 ${coderRole?.systemPrompt || 'You are an expert AI coding assistant that learns and remembers across sessions.'}
 
 MODE: ${mode === 'FIX' ? 'Execute code changes and fixes' : 'Explain and answer questions'}
-VERBOSITY: LOW (Be concise. Act immediately.)
+VERBOSITY: LOW. ${turnInstructions}
 
 ${fileContext}
 ${knowledgeContext}
@@ -162,14 +179,6 @@ ${knowledgeContext}
 USER REQUEST: ${currentMessage}
 
 ${toolInstructions}
-
-RESPONSE GUIDELINES:
-- Be direct and action-oriented. 
-- Avoid chatter. If a tool is needed, use it as the VERY FIRST part of your response.
-- Save important learnings using save_knowledge tool
-- Provide high level details of what was added, modified or deleted after task completion
-- Reference previous knowledge when relevant
-- When fixing code, show the complete fixed file content
 `;
 };
 
@@ -557,13 +566,16 @@ export const streamFixCodeWithGemini = async (
     const knowledgeContext = relevantKnowledge.length > 0 ? `\nRELEVANT KNOWLEDGE:\n${relevantKnowledge.map(k => `- ${k.content}`).join('\n')}` : "";
     const coderRole = (roles || []).find(r => r.id === llmConfig.coderRoleId) || (roles || [])[1];
 
-    const systemInstruction = buildSystemPrompt(
-      mode, fileContext, knowledgeContext, currentMessage, coderRole, true, knowledgeManager
-    );
-
-    // Initialize Conversation History
+    let activeAgentModel = llmConfig.chatModelId || llmConfig.activeModelId;
+    let turnCount = 0;
+    let keepGoing = true;
+    
+    // Tracks what we actually sent to the user via callbacks to avoid glitches/duplication
+    let accumulatedGlobalStream = ""; 
+    
+    // Conversation history container
     const messages = [
-      { role: 'system', content: systemInstruction },
+      { role: 'system', content: '' }, // Placeholder for dynamic system prompt
       ...(history || []).slice(-4).map(h => ({ 
         role: h.role === 'model' ? 'assistant' : 'user', 
         content: h.content 
@@ -571,20 +583,20 @@ export const streamFixCodeWithGemini = async (
       { role: 'user', content: currentMessage }
     ];
 
-    let activeAgentModel = llmConfig.chatModelId || llmConfig.activeModelId;
-    let turnCount = 0;
-    let keepGoing = true;
-    
-    // Tracks what we actually sent to the user via callbacks to avoid glitches/duplication
-    let accumulatedGlobalStream = ""; 
-
     // --- AGENT STREAMING LOOP ---
     while (keepGoing && turnCount < MAX_AGENT_TURNS) {
       turnCount++;
       
+      // Update dynamic system prompt for this turn
+      // If turnCount > 1, we want MAXIMUM SPEED (no explanations)
+      messages[0].content = buildSystemPrompt(
+        mode, fileContext, knowledgeContext, currentMessage, coderRole, true, knowledgeManager, 
+        turnCount > 1 // isFollowUpTurn
+      );
+
       // Update status to show activity
       if (callbacks.onStatusUpdate) {
-        callbacks.onStatusUpdate(turnCount === 1 ? "🧠 Analyzing..." : "🤔 Processing results...");
+        callbacks.onStatusUpdate(turnCount === 1 ? "🧠 Analyzing..." : "⚡ Processing...");
       }
 
       let turnTextResponse = "";
