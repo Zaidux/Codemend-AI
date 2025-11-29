@@ -137,12 +137,12 @@ CRITICAL TOOL USAGE RULES:
 1. When user asks to CREATE a file → IMMEDIATELY call create_file tool
 2. When user asks to MODIFY/UPDATE/FIX code → IMMEDIATELY call update_file tool  
 3. When user asks to SEARCH code → call search_files tool
-4. When you need to READ a specific file → call read_file tool
+4. When you need to READ a specific file → call read_file tool. (If you don't know the path, use list_files first)
 5. When user teaches you something NEW or you discover useful patterns → call save_knowledge tool
 6. DO NOT EXPLAIN what you are going to do. CALL THE TOOL DIRECTLY. 
 7. If tool fails, try again with corrected parameters
 
-AVAILABLE TOOLS: create_file, update_file, search_files, read_file, save_knowledge, manage_tasks
+AVAILABLE TOOLS: create_file, update_file, delete_file, list_files, search_files, read_file, save_knowledge, manage_tasks
 
 KNOWLEDGE SAVING GUIDELINES:
 - Save user preferences (coding style, architecture choices, tool preferences)
@@ -167,14 +167,12 @@ RESPONSE GUIDELINES:
 - Be direct and action-oriented. 
 - Avoid chatter. If a tool is needed, use it as the VERY FIRST part of your response.
 - Save important learnings using save_knowledge tool
-- provide clear details of what was done, added or updated after task completion
 - Reference previous knowledge when relevant
 - When fixing code, show the complete fixed file content
 `;
 };
 
 // --- SHARED TOOL EXECUTION LOGIC ---
-// Extracts the logic to ensure consistency between Streaming and Non-Streaming
 const executeToolAction = (
   toolName: string, 
   args: any, 
@@ -210,7 +208,9 @@ const executeToolAction = (
           logger.logToolCall('update_file', true, `Updated ${args.name}`);
           if (onStatusUpdate) onStatusUpdate(`📝 Updated ${args.name}`);
         } else {
-          toolOutput = `Error: File "${args.name}" not found. Please use create_file or check the name.`;
+          // If update fails, helpfully list files
+          const fileList = files.map(f => f.name).slice(0, 50).join(', ');
+          toolOutput = `Error: File "${args.name}" not found. Available files: ${fileList}`;
           logger.logToolCall('update_file', false, `File not found: ${args.name}`);
         }
       }
@@ -231,6 +231,42 @@ const executeToolAction = (
         if (onStatusUpdate) onStatusUpdate(`✨ Created ${args.name}`);
       }
 
+    } else if (toolName === 'delete_file') {
+      if (isFileProtected(args.name)) {
+        toolOutput = `Error: Cannot delete protected file "${args.name}".`;
+      } else {
+        const existing = files.find(f => f.name === args.name);
+        if (existing) {
+          change = {
+            id: generateUUID(),
+            fileName: args.name,
+            originalContent: existing.content,
+            newContent: '',
+            type: 'delete'
+          };
+          toolOutput = `Success: Prepared deletion of ${args.name}.`;
+          logger.logToolCall('delete_file', true, `Deleted ${args.name}`);
+          if (onStatusUpdate) onStatusUpdate(`🗑️ Deleted ${args.name}`);
+        } else {
+          toolOutput = `Error: File "${args.name}" not found.`;
+        }
+      }
+
+    } else if (toolName === 'list_files') {
+      if (onStatusUpdate) onStatusUpdate(`📂 Listing files...`);
+      // Simple filtering if path is provided, otherwise all files
+      const relevantFiles = args.path 
+        ? files.filter(f => f.name.startsWith(args.path))
+        : files;
+        
+      const fileList = relevantFiles.map(f => {
+         const lineCount = f.content ? f.content.split('\n').length : 0;
+         return `- ${f.name} (${lineCount} lines)`;
+      }).join('\n');
+      
+      toolOutput = `Project Files:\n${fileList || 'No files found.'}`;
+      logger.logToolCall('list_files', true, `Listed ${relevantFiles.length} files`);
+
     } else if (toolName === 'search_files') {
       if (onStatusUpdate) onStatusUpdate(`🔍 Searching for "${args.query}"...`);
       const results = performSearch(args.query, files);
@@ -245,8 +281,10 @@ const executeToolAction = (
         toolOutput = `Content of ${f.name}:\n\`\`\`${f.language}\n${f.content}\n\`\`\``;
         logger.logToolCall('read_file', true, `Read ${f.name}`);
       } else {
-        toolOutput = `Error: File "${args.fileName}" not found.`;
-        logger.logToolCall('read_file', false, `File not found: ${args.fileName}`);
+        // ENHANCEMENT: Return file list if file is not found
+        const fileList = files.map(f => f.name).join('\n');
+        toolOutput = `Error: File "${args.fileName}" not found.\n\nHere is a list of ALL valid files in the project. Please pick one from this list:\n${fileList}`;
+        logger.logToolCall('read_file', false, `File not found: ${args.fileName} (Sent file list)`);
       }
 
     } else if (toolName === 'save_knowledge') {
@@ -645,7 +683,6 @@ export const streamFixCodeWithGemini = async (
     }
 
     // Critical: Send the ACCUMULATED stream text as the final complete text.
-    // This prevents the "Message Changed" glitch where the UI might reset to a different state.
     callbacks.onComplete(accumulatedGlobalStream);
 
   } catch (error: any) {
