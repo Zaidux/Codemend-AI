@@ -31,8 +31,7 @@ export const callGemini = async (
   return attemptWithRetry(async () => {
     const ai = new GoogleGenAI({ apiKey });
     const logger = ToolUsageLogger.getInstance();
-    
-    // Configurable thinking budget could be passed here in future
+
     const config: any = {
       thinkingConfig: { thinkingBudget: 2 } 
     };
@@ -50,7 +49,6 @@ export const callGemini = async (
         config
       });
 
-      // Log tool usage
       if (response.functionCalls && response.functionCalls.length > 0) {
         response.functionCalls.forEach((call: any) => logger.logToolCall(call.name, true));
       }
@@ -64,7 +62,6 @@ export const callGemini = async (
   });
 };
 
-// NEW: Gemini Streaming Support
 export const callGeminiStream = async (
   model: string,
   parts: any[],
@@ -75,7 +72,7 @@ export const callGeminiStream = async (
 ): Promise<string> => {
   const ai = new GoogleGenAI({ apiKey });
   const config: any = {};
-  
+
   const activeTools: any[] = [];
   if (tools) activeTools.push({ functionDeclarations: GEMINI_TOOL_DEFINITIONS });
   if (activeTools.length > 0) config.tools = activeTools;
@@ -90,21 +87,17 @@ export const callGeminiStream = async (
     let fullText = "";
 
     for await (const chunk of result.stream) {
-      // 1. Handle Text
       const text = chunk.text();
       if (text) {
         fullText += text;
         onContent(text);
       }
 
-      // 2. Handle Function Calls in Stream
-      // Note: Google SDK usually sends function calls at the end or in a specific chunk type
       const calls = chunk.functionCalls(); 
       if (calls && calls.length > 0 && onToolCall) {
-        // Map Google's structure to a generic structure
         const mappedCalls = calls.map((c: any) => ({
           name: c.name,
-          args: JSON.stringify(c.args) // Normalize args to string for consistency
+          args: JSON.stringify(c.args) 
         }));
         onToolCall(mappedCalls);
       }
@@ -130,7 +123,7 @@ export const callOpenAICompatible = async (
     const body: any = {
       model,
       messages,
-      temperature: 0.2, // Slightly higher for creativity but still focused
+      temperature: 0.2, 
       stream: false,
     };
 
@@ -163,8 +156,6 @@ export const callOpenAICompatible = async (
     }
 
     const data = await response.json();
-    
-    // Log tools
     const toolCalls = data.choices?.[0]?.message?.tool_calls;
     if (toolCalls?.length) {
       toolCalls.forEach((call: any) => logger.logToolCall(call.function.name, true));
@@ -219,7 +210,7 @@ export const callOpenAICompatibleStream = async (
 
     const decoder = new TextDecoder();
     let fullContent = '';
-    let buffer = ''; // Buffer for incomplete chunks
+    let buffer = ''; 
     const completedToolCalls = new Set<string>();
 
     while (true) {
@@ -227,11 +218,9 @@ export const callOpenAICompatibleStream = async (
       if (done) break;
 
       const chunk = decoder.decode(value, { stream: true });
-      // Append new chunk to buffer and split by double newline or data prefix
       buffer += chunk;
-      
+
       const lines = buffer.split('\n');
-      // Keep the last line in buffer if it's incomplete
       buffer = lines.pop() || '';
 
       for (const line of lines) {
@@ -263,9 +252,7 @@ export const callOpenAICompatibleStream = async (
             });
           }
         } catch (e) {
-          // If JSON parse fails, it might be a split chunk. 
-          // In a more advanced implementation, we would add this line back to buffer.
-          // For now, we ignore minor glitches common in local models.
+          // Ignore parse errors from partial chunks
         }
       }
     }
@@ -274,6 +261,6 @@ export const callOpenAICompatibleStream = async (
   } catch (error: any) {
     if (error.name === 'AbortError') throw error;
     logger.logToolCall('openai_stream_call', false, error.message);
-    return ""; // Return empty on hard fail
+    return ""; 
   }
 };
