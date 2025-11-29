@@ -176,7 +176,93 @@ RESPONSE GUIDELINES:
 `;
 };
 
-// --- ORCHESTRATOR ---
+// --- SHARED TOOL EXECUTION LOGIC ---
+// Extracts the logic to ensure consistency between Streaming and Non-Streaming
+const executeToolAction = (
+  toolName: string, 
+  args: any, 
+  files: ProjectFile[], 
+  logger: ToolUsageLogger,
+  knowledgeManager: KnowledgeManager
+): { output: string; change?: FileDiff } => {
+  
+  let toolOutput = "";
+  let change: FileDiff | undefined;
+
+  try {
+    if (toolName === 'update_file') {
+      if (isFileProtected(args.name)) {
+        toolOutput = `Error: Cannot modify protected file "${args.name}" for security reasons.`;
+        logger.logToolCall('update_file', false, `Blocked write to ${args.name}`);
+      } else {
+        const existing = files.find(f => f.name === args.name);
+        if (existing) {
+          change = {
+            id: generateUUID(),
+            fileName: args.name,
+            originalContent: existing.content,
+            newContent: args.content,
+            type: 'update'
+          };
+          toolOutput = `Success: Prepared update for ${args.name}.`;
+          logger.logToolCall('update_file', true, `Updated ${args.name}`);
+        } else {
+          toolOutput = `Error: File "${args.name}" not found. Please use create_file or check the name.`;
+          logger.logToolCall('update_file', false, `File not found: ${args.name}`);
+        }
+      }
+
+    } else if (toolName === 'create_file') {
+      if (isFileProtected(args.name)) {
+        toolOutput = `Error: Cannot create protected file "${args.name}".`;
+      } else {
+        change = {
+          id: generateUUID(),
+          fileName: args.name,
+          originalContent: '',
+          newContent: args.content,
+          type: 'create'
+        };
+        toolOutput = `Success: Prepared creation of ${args.name}.`;
+        logger.logToolCall('create_file', true, `Created ${args.name}`);
+      }
+
+    } else if (toolName === 'search_files') {
+      const results = performSearch(args.query, files);
+      toolOutput = `Search Results for "${args.query}":\n${results.map(r => `- ${r.fileName}:${r.line} ${r.content}`).join('\n')}`;
+      if (results.length === 0) toolOutput = "No matches found.";
+      logger.logToolCall('search_files', true, `Found ${results.length} results`);
+
+    } else if (toolName === 'read_file') {
+      const f = files.find(file => file.name === args.fileName);
+      if (f) {
+        toolOutput = `Content of ${f.name}:\n\`\`\`${f.language}\n${f.content}\n\`\`\``;
+        logger.logToolCall('read_file', true, `Read ${f.name}`);
+      } else {
+        toolOutput = `Error: File "${args.fileName}" not found.`;
+        logger.logToolCall('read_file', false, `File not found: ${args.fileName}`);
+      }
+
+    } else if (toolName === 'save_knowledge') {
+      knowledgeManager.saveKnowledge(
+        args.tags,
+        args.content,
+        args.tags.includes('#global') ? 'global' : 'project'
+      );
+      toolOutput = `Saved knowledge: ${args.content}`;
+      logger.logToolCall('save_knowledge', true, `Saved knowledge`);
+    } else {
+      toolOutput = `Error: Unknown tool "${toolName}"`;
+    }
+  } catch (err: any) {
+    toolOutput = `Error executing ${toolName}: ${err.message}`;
+    logger.logToolCall(toolName, false, err.message);
+  }
+
+  return { output: toolOutput, change };
+};
+
+// --- ORCHESTRATOR (NON-STREAMING) ---
 export const fixCodeWithGemini = async (request: FixRequest): Promise<FixResponse> => {
   const { 
     llmConfig, history, currentMessage, allFiles, activeFile, mode, attachments, 
@@ -185,13 +271,8 @@ export const fixCodeWithGemini = async (request: FixRequest): Promise<FixRespons
 
   const logger = ToolUsageLogger.getInstance();
   const knowledgeManager = KnowledgeManager.getInstance();
-  
-  // Load existing knowledge
-  if (knowledgeBase) {
-    knowledgeManager.loadKnowledge(knowledgeBase);
-  }
 
-  // Validate critical inputs
+  if (knowledgeBase) knowledgeManager.loadKnowledge(knowledgeBase);
   if (!llmConfig) return { response: "", error: "Missing LLM configuration" };
   if (!currentMessage?.trim()) return { response: "", error: "Empty message" };
 
@@ -217,10 +298,9 @@ export const fixCodeWithGemini = async (request: FixRequest): Promise<FixRespons
     baseUrl = baseUrl || 'https://api.openai.com/v1';
   }
 
-  // Calculate Context and Compression
+  // Context and Compression
   const totalChars = safeAllFiles.reduce((acc, f) => acc + (f.content?.length || 0), 0);
   const shouldCompress = useCompression || (totalChars > LAZY_LOAD_THRESHOLD && !request.useHighCapacity);
-
   let fileContext = "";
   let usedCompression = false;
 
@@ -233,19 +313,14 @@ export const fixCodeWithGemini = async (request: FixRequest): Promise<FixRespons
     fileContext = `ALL PROJECT FILES:\n${safeAllFiles.map(f => `File: ${f.name} (${f.language})\n\`\`\`${f.language}\n${f.content}\n\`\`\``).join('\n\n')}`;
   }
 
-  // --- IMPROVED KNOWLEDGE RETRIEVAL ---
-  // Matches tags (e.g. #style) OR simple keywords matching existing tags
+  // Knowledge Retrieval
   const messageTokens = currentMessage.toLowerCase().split(/[\s,.]+/);
   const tagsInMessage: string[] = currentMessage.match(/#[\w-]+/g) || [];
-  
+
   const relevantKnowledge = (knowledgeBase || []).filter(entry => {
     if (!entry.tags) return false;
-    // 1. Check Explicit Tags in message
     if (entry.tags.some(tag => tagsInMessage.includes(tag))) return true;
-    // 2. Check Global
     if (entry.tags.includes('#global')) return true;
-    // 3. Check Keyword Match (Fuzzy)
-    // If the entry tag is "#react-query", and user said "react query", it's a match.
     return entry.tags.some(tag => {
       const bareTag = tag.replace('#', '').toLowerCase();
       return messageTokens.includes(bareTag) || bareTag.split('-').every(part => messageTokens.includes(part));
@@ -254,10 +329,9 @@ export const fixCodeWithGemini = async (request: FixRequest): Promise<FixRespons
 
   const knowledgeContext = relevantKnowledge.length > 0 ? 
     `\nRELEVANT KNOWLEDGE/PREFERENCES:\n${relevantKnowledge.map(k => `- ${k.content} [${k.tags.join(', ')}]`).join('\n')}` : "";
-  
+
   const coderRole = (roles || []).find(r => r.id === llmConfig.coderRoleId) || (roles || [])[1];
 
-  // EXECUTION STEP
   let activeAgentModel = llmConfig.chatModelId || llmConfig.coderModelId || llmConfig.activeModelId;
   if (!activeAgentModel) return { response: "", error: "No active model configured." };
 
@@ -267,24 +341,17 @@ export const fixCodeWithGemini = async (request: FixRequest): Promise<FixRespons
     knowledgeContext, 
     currentMessage, 
     coderRole, 
-    true, // Always enable tools for execution
+    true,
     knowledgeManager
   );
 
-  // --- AGENT LOOP INITIALIZATION ---
   let finalResponseText = "";
   const allProposedChanges: FileDiff[] = [];
   const allToolCalls: ToolCall[] = [];
-  
-  // Prepare Conversation History for Loop
+
   let conversationMessages: any[] = [];
-  
+
   if (isGemini) {
-    // Gemini uses a specific parts structure, simplified here for the loop concept
-    // Note: Complex Gemini loops often require managing the 'history' object directly via SDK
-    // For this implementation, we will stick to a simpler single-pass for Gemini 
-    // or simulate history if the 'callGemini' supports passing accumulated turns.
-    // Assuming callGemini takes `parts` representing the FULL conversation.
     conversationMessages = [
         { text: systemInstruction },
         ...safeHistory.slice(-4).map(msg => ({ text: `${msg.role === 'user' ? 'USER' : 'ASSISTANT'}: ${msg.content}` })),
@@ -305,7 +372,6 @@ export const fixCodeWithGemini = async (request: FixRequest): Promise<FixRespons
   let keepGoing = true;
 
   try {
-    // --- START AGENT LOOP ---
     while (keepGoing && turnCount < MAX_AGENT_TURNS) {
       turnCount++;
       let currentResponseText = "";
@@ -333,121 +399,38 @@ export const fixCodeWithGemini = async (request: FixRequest): Promise<FixRespons
 
       finalResponseText += currentResponseText;
 
-      // If no tools, we are done
       if (currentToolCalls.length === 0) {
         keepGoing = false;
         break;
       }
 
-      // Add Assistant Response to History (so it knows what it asked for)
       if (isGemini) {
         conversationMessages.push({ text: `ASSISTANT: ${currentResponseText}` });
       } else {
-        conversationMessages.push({ role: 'assistant', content: currentResponseText }); // Add content even if empty (for OpenAI)
-        // Note: In strict OpenAI, you'd add tool_calls field here. 
-        // We are using a generic message structure that works for most locals.
+        conversationMessages.push({ role: 'assistant', content: currentResponseText });
       }
 
-      // 2. EXECUTE TOOLS & GENERATE FEEDBACK
+      // 2. EXECUTE TOOLS (Refactored to use shared logic)
       for (const fc of currentToolCalls) {
-        let toolOutput = "";
-        try {
-          const args = typeof fc.args === 'string' ? safeJsonParse(fc.args) : (fc.args || {});
-          
-          const toolCall: ToolCall = {
+        const args = typeof fc.args === 'string' ? safeJsonParse(fc.args) : (fc.args || {});
+        const toolCall: ToolCall = {
             id: 'call_' + Math.random().toString(36).substr(2, 9),
             name: fc.name,
             args: args
-          };
-          allToolCalls.push(toolCall);
+        };
+        allToolCalls.push(toolCall);
 
-          // --- TOOL LOGIC ---
-          if (toolCall.name === 'update_file') {
-             if (isFileProtected(toolCall.args.name)) {
-                 toolOutput = `Error: Cannot modify protected file "${toolCall.args.name}" for security reasons.`;
-                 logger.logToolCall('update_file', false, `Blocked write to ${toolCall.args.name}`);
-             } else {
-                const existing = safeAllFiles.find(f => f.name === toolCall.args.name);
-                if (existing) {
-                  allProposedChanges.push({ 
-                    id: generateUUID(), 
-                    fileName: toolCall.args.name, 
-                    originalContent: existing.content, 
-                    newContent: toolCall.args.content, 
-                    type: 'update' 
-                  });
-                  toolOutput = `Success: Prepared update for ${toolCall.args.name}.`;
-                  logger.logToolCall('update_file', true, `Updated ${toolCall.args.name}`);
-                } else {
-                  toolOutput = `Error: File "${toolCall.args.name}" not found. Please use create_file or check the name.`;
-                  logger.logToolCall('update_file', false, `File not found: ${toolCall.args.name}`);
-                }
-             }
+        const { output, change } = executeToolAction(fc.name, args, safeAllFiles, logger, knowledgeManager);
+        
+        if (change) allProposedChanges.push(change);
 
-          } else if (toolCall.name === 'create_file') {
-             if (isFileProtected(toolCall.args.name)) {
-                toolOutput = `Error: Cannot create protected file "${toolCall.args.name}".`;
-             } else {
-                allProposedChanges.push({ 
-                  id: generateUUID(), 
-                  fileName: toolCall.args.name, 
-                  originalContent: '', 
-                  newContent: toolCall.args.content, 
-                  type: 'create' 
-                });
-                toolOutput = `Success: Prepared creation of ${toolCall.args.name}.`;
-                logger.logToolCall('create_file', true, `Created ${toolCall.args.name}`);
-             }
-
-          } else if (toolCall.name === 'search_files') {
-            const results = performSearch(toolCall.args.query, safeAllFiles);
-            toolOutput = `Search Results for "${toolCall.args.query}":\n${results.map(r => `- ${r.fileName}:${r.line} ${r.content}`).join('\n')}`;
-            if (results.length === 0) toolOutput = "No matches found.";
-            logger.logToolCall('search_files', true, `Found ${results.length} results`);
-
-          } else if (toolCall.name === 'read_file') {
-            const f = safeAllFiles.find(file => file.name === toolCall.args.fileName);
-            if (f) {
-              toolOutput = `Content of ${f.name}:\n\`\`\`${f.language}\n${f.content}\n\`\`\``;
-              logger.logToolCall('read_file', true, `Read ${f.name}`);
-            } else {
-              toolOutput = `Error: File "${toolCall.args.fileName}" not found.`;
-              logger.logToolCall('read_file', false, `File not found: ${toolCall.args.fileName}`);
-            }
-
-          } else if (toolCall.name === 'save_knowledge') {
-            const knowledgeEntry = knowledgeManager.saveKnowledge(
-              toolCall.args.tags, 
-              toolCall.args.content,
-              toolCall.args.tags.includes('#global') ? 'global' : 'project'
-            );
-            toolOutput = `Saved knowledge: ${toolCall.args.content}`;
-            logger.logToolCall('save_knowledge', true, `Saved knowledge`);
-          }
-
-        } catch (error: any) { 
-          console.error('Tool Error', error);
-          toolOutput = `Tool execution error: ${error.message}`;
-          logger.logToolCall(fc.name, false, error.message);
-        }
-
-        // Add Tool Result to History so the Agent can see it in the next turn
+        // Add Tool Result to History
         if (isGemini) {
-            conversationMessages.push({ text: `TOOL_OUTPUT (${fc.name}): ${toolOutput}` });
+            conversationMessages.push({ text: `TOOL_OUTPUT (${fc.name}): ${output}` });
         } else {
-            conversationMessages.push({ role: 'user', content: `[System Tool Output for ${fc.name}]: ${toolOutput}` });
+            conversationMessages.push({ role: 'user', content: `[System Tool Output for ${fc.name}]: ${output}` });
         }
-      } // End Tool Loop
-
-    } // End While Loop
-
-    // If no tools were called but the request implies action, log this
-    if (allToolCalls.length === 0 && 
-        (currentMessage.toLowerCase().includes('create') || 
-         currentMessage.toLowerCase().includes('update') ||
-         currentMessage.toLowerCase().includes('fix') ||
-         currentMessage.toLowerCase().includes('add'))) {
-      logger.logToolCall('no_tool_used', false, 'Action requested but no tools were called');
+      } 
     }
 
     return { 
@@ -462,7 +445,7 @@ export const fixCodeWithGemini = async (request: FixRequest): Promise<FixRespons
   }
 };
 
-// --- ENHANCED STREAMING ORCHESTRATOR ---
+// --- ENHANCED STREAMING ORCHESTRATOR WITH AGENT LOOP ---
 export const streamFixCodeWithGemini = async (
   request: FixRequest,
   callbacks: StreamingCallbacks,
@@ -476,16 +459,12 @@ export const streamFixCodeWithGemini = async (
   const logger = ToolUsageLogger.getInstance();
   const knowledgeManager = KnowledgeManager.getInstance();
 
-  if (knowledgeBase) {
-    knowledgeManager.loadKnowledge(knowledgeBase);
-  }
-
-  // 1. Validation
+  if (knowledgeBase) knowledgeManager.loadKnowledge(knowledgeBase);
   if (!llmConfig || !currentMessage) {
     callbacks.onError("Configuration or message missing.");
     return;
   }
-  
+
   const safeAllFiles = allFiles || [];
   const safeActiveFile = activeFile || safeAllFiles[0];
 
@@ -494,8 +473,10 @@ export const streamFixCodeWithGemini = async (
   let apiKey = llmConfig.apiKey || '';
   let baseUrl = llmConfig.baseUrl || '';
 
+  // Currently, the multi-turn logic below is optimized for OpenAI/Local compatible streams.
+  // Gemini streaming has a different SDK signature.
   if (isGemini) {
-    callbacks.onError('Streaming with tools is not fully supported for Gemini in this version. Use non-streaming mode.');
+    callbacks.onError('Streaming with multi-turn tools is not fully supported for Gemini in this version. Please use non-streaming mode.');
     return;
   }
 
@@ -517,7 +498,6 @@ export const streamFixCodeWithGemini = async (
       fileContext = `ALL PROJECT FILES:\n${safeAllFiles.map(f => `File: ${f.name} (${f.language})\n\`\`\`${f.language}\n${f.content}\n\`\`\``).join('\n\n')}`;
     }
 
-    // Improved Knowledge Retrieval for Streaming too
     const messageTokens = currentMessage.toLowerCase().split(/[\s,.]+/);
     const tagsInMessage: string[] = currentMessage.match(/#[\w-]+/g) || [];
     const relevantKnowledge = (knowledgeBase || []).filter(entry => {
@@ -531,19 +511,13 @@ export const streamFixCodeWithGemini = async (
     });
 
     const knowledgeContext = relevantKnowledge.length > 0 ? `\nRELEVANT KNOWLEDGE:\n${relevantKnowledge.map(k => `- ${k.content}`).join('\n')}` : "";
-
     const coderRole = (roles || []).find(r => r.id === llmConfig.coderRoleId) || (roles || [])[1];
-    
+
     const systemInstruction = buildSystemPrompt(
-      mode, 
-      fileContext, 
-      knowledgeContext, 
-      currentMessage, 
-      coderRole, 
-      true,
-      knowledgeManager
+      mode, fileContext, knowledgeContext, currentMessage, coderRole, true, knowledgeManager
     );
 
+    // Initialize Conversation History
     const messages = [
       { role: 'system', content: systemInstruction },
       ...(history || []).slice(-4).map(h => ({ 
@@ -554,116 +528,102 @@ export const streamFixCodeWithGemini = async (
     ];
 
     let activeAgentModel = llmConfig.chatModelId || llmConfig.activeModelId;
+    let turnCount = 0;
+    let keepGoing = true;
+    let fullTextResponse = "";
 
-    // --- ACCUMULATE TOOL CALLS ---
-    let accumulatedToolCalls: Record<number, { name: string, args: string, id: string }> = {};
+    // --- AGENT STREAMING LOOP ---
+    while (keepGoing && turnCount < MAX_AGENT_TURNS) {
+      turnCount++;
+      let turnTextResponse = "";
+      let accumulatedToolCalls: Record<number, { name: string, args: string, id: string }> = {};
 
-    // Execute stream and capture the full text response
-    const fullTextResponse = await callOpenAICompatibleStream(
-      baseUrl, 
-      apiKey, 
-      activeAgentModel, 
-      messages, 
-      true, // Tools enabled
-      (isLocal ? getLocalProviderConfig('custom', baseUrl).customHeaders : {}),
-      callbacks.onContent,
-      // Handle Tool Call Chunks
-      (toolCallChunks) => {
-        toolCallChunks.forEach((chunk) => {
-          const index = chunk.index;
-          if (!accumulatedToolCalls[index]) {
-            accumulatedToolCalls[index] = { name: '', args: '', id: '' };
+      // 1. Call Stream for current turn
+      await callOpenAICompatibleStream(
+        baseUrl, 
+        apiKey, 
+        activeAgentModel, 
+        messages, 
+        true, // Tools enabled
+        (isLocal ? getLocalProviderConfig('custom', baseUrl).customHeaders : {}),
+        (content) => {
+          turnTextResponse += content;
+          fullTextResponse += content;
+          callbacks.onContent(content); // Stream text to UI immediately
+        },
+        (toolCallChunks) => {
+          // Accumulate tool fragments
+          toolCallChunks.forEach((chunk) => {
+            const index = chunk.index;
+            if (!accumulatedToolCalls[index]) {
+              accumulatedToolCalls[index] = { name: '', args: '', id: '' };
+            }
+            if (chunk.id) accumulatedToolCalls[index].id = chunk.id;
+            if (chunk.function?.name) accumulatedToolCalls[index].name += chunk.function.name;
+            if (chunk.function?.arguments) accumulatedToolCalls[index].args += chunk.function.arguments;
+
+            if (chunk.function?.name && callbacks.onStatusUpdate) {
+               // Only update status on first detection of name to avoid flicker
+               const toolName = chunk.function.name;
+               if (!accumulatedToolCalls[index].name.includes(toolName.slice(0, -1))) {
+                 if (toolName === 'search_files') callbacks.onStatusUpdate("🔍 Searching...");
+                 if (toolName === 'create_file') callbacks.onStatusUpdate("📝 Creating...");
+                 if (toolName === 'update_file') callbacks.onStatusUpdate("🔨 Fix applied...");
+                 if (toolName === 'read_file') callbacks.onStatusUpdate("📖 Reading...");
+               }
+            }
+          });
+        },
+        signal
+      );
+
+      // 2. Process Tools for this turn
+      const toolCallsInThisTurn = Object.values(accumulatedToolCalls);
+
+      if (toolCallsInThisTurn.length === 0) {
+        keepGoing = false; // No tools called, Agent is done
+      } else {
+        // Add Assistant's thoughts/calls to history so it remembers what it did
+        messages.push({ role: 'assistant', content: turnTextResponse }); // Note: Strict OpenAI requires tool_calls object here too, but generic locals often tolerate just content.
+
+        // Execute Tools
+        for (const tc of toolCallsInThisTurn) {
+          try {
+             if (!tc.name) continue;
+             const args = tc.args ? safeJsonParse(tc.args) : {};
+             
+             // Emit parsed tool call for UI tracking
+             if (callbacks.onToolCalls) {
+               callbacks.onToolCalls([{ id: tc.id || generateUUID(), name: tc.name, args }]);
+             }
+
+             // Execute logic
+             const { output, change } = executeToolAction(tc.name, args, safeAllFiles, logger, knowledgeManager);
+
+             // Emit changes if any
+             if (change && callbacks.onProposedChanges) {
+                callbacks.onProposedChanges([change]);
+                // Visual feedback in stream
+                callbacks.onContent(`\n\n✅ [Action]: ${tc.name} executed successfully.\n`);
+             }
+
+             // 3. Feed result back to LLM
+             // For generic compatibility, we often use user role with a system prefix.
+             messages.push({ 
+               role: 'user', 
+               content: `[Tool Result for ${tc.name}]: ${output}` 
+             });
+
+          } catch (e: any) {
+            console.error("Tool execution failed in stream:", e);
+            messages.push({ role: 'user', content: `[Tool Error]: ${e.message}` });
           }
-          if (chunk.id) accumulatedToolCalls[index].id = chunk.id;
-          if (chunk.function?.name) accumulatedToolCalls[index].name += chunk.function.name;
-          if (chunk.function?.arguments) accumulatedToolCalls[index].args += chunk.function.arguments;
-
-          // Emit Status Updates
-          if (chunk.function?.name && callbacks.onStatusUpdate) {
-            const toolName = chunk.function.name;
-            if (toolName === 'search_files') callbacks.onStatusUpdate("🔍 Searching project files...");
-            if (toolName === 'create_file') callbacks.onStatusUpdate("📝 Creating new file...");
-            if (toolName === 'update_file') callbacks.onStatusUpdate("🔨 Applying fixes to file...");
-            if (toolName === 'read_file') callbacks.onStatusUpdate("📖 Reading file content...");
-            if (toolName === 'save_knowledge') callbacks.onStatusUpdate("💾 Saving knowledge...");
-          }
-        });
-      },
-      signal
-    );
-
-    // 3. Process Accumulated Tools after Stream
-    const finalToolCalls: ToolCall[] = [];
-    const proposedChanges: FileDiff[] = [];
-
-    Object.values(accumulatedToolCalls).forEach((tc) => {
-      try {
-        if (!tc.name) return;
-        // Use Safe Parser
-        const args = tc.args ? safeJsonParse(tc.args) : {};
-
-        const toolCall: ToolCall = { id: tc.id || generateUUID(), name: tc.name, args };
-        finalToolCalls.push(toolCall);
-
-        if (tc.name === 'create_file') {
-          if(isFileProtected(args.name)) {
-              callbacks.onContent(`\n\n[Security Blocked]: Cannot create protected file ${args.name}`);
-              logger.logToolCall('create_file', false, `Blocked create ${args.name}`);
-          } else {
-              proposedChanges.push({
-                id: generateUUID(),
-                fileName: args.name,
-                originalContent: '',
-                newContent: args.content,
-                type: 'create'
-              });
-              logger.logToolCall('create_file', true, `Stream created ${args.name}`);
-          }
-        } else if (tc.name === 'update_file') {
-          if (isFileProtected(args.name)) {
-             callbacks.onContent(`\n\n[Security Blocked]: Cannot update protected file ${args.name}`);
-             logger.logToolCall('update_file', false, `Blocked update ${args.name}`);
-          } else {
-              const existing = safeAllFiles.find(f => f.name === args.name);
-              if (existing) {
-                proposedChanges.push({
-                  id: generateUUID(),
-                  fileName: args.name,
-                  originalContent: existing.content,
-                  newContent: args.content,
-                  type: 'update'
-                });
-                logger.logToolCall('update_file', true, `Stream updated ${args.name}`);
-              } else {
-                logger.logToolCall('update_file', false, `File not found in stream: ${args.name}`);
-              }
-          }
-        } else if (tc.name === 'save_knowledge') {
-            knowledgeManager.saveKnowledge(
-              args.tags, 
-              args.content,
-              args.tags.includes('#global') ? 'global' : 'project'
-            );
-            callbacks.onContent(`\n\n💾 [Stream] Knowledge saved: "${args.content.substring(0, 50)}..."`);
-            logger.logToolCall('save_knowledge', true, `Stream saved knowledge`);
         }
-      } catch (e: any) {
-        console.error("Failed to parse accumulated tool call:", e);
-        logger.logToolCall('stream_tool_parse', false, e.message);
-        callbacks.onContent(`\n[Error executing tool: ${e}]`);
+        // Loop continues to next turn to let LLM see the tool output and decide next steps
       }
-    });
-
-    if (finalToolCalls.length > 0 && callbacks.onToolCalls) {
-      callbacks.onToolCalls(finalToolCalls);
     }
 
-    if (proposedChanges.length > 0 && callbacks.onProposedChanges) {
-      callbacks.onProposedChanges(proposedChanges);
-      callbacks.onContent(`\n\n✅ SUCCESS: Prepared ${proposedChanges.length} file changes. Please review and apply them.`);
-    }
-
-    callbacks.onComplete(fullTextResponse || "");
+    callbacks.onComplete(fullTextResponse);
 
   } catch (error: any) {
     logger.logToolCall('stream_service', false, error.message);
@@ -671,5 +631,4 @@ export const streamFixCodeWithGemini = async (
   }
 };
 
-// Export the logger for debugging
 export { ToolUsageLogger };
