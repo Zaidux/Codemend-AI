@@ -129,7 +129,7 @@ export class KnowledgeManager {
   saveKnowledge(tags: string[], content: string, scope: string = 'global'): KnowledgeEntry {
     // Normalize tags
     const normalizedTags = tags.map(t => t.startsWith('#') ? t.toLowerCase() : '#' + t.toLowerCase());
-    
+
     const entry: KnowledgeEntry = {
       id: this.generateId(),
       tags: normalizedTags,
@@ -163,7 +163,7 @@ export class KnowledgeManager {
 
         // 2. Content Semantic Overlap (Basic)
         if (entry.content.toLowerCase().includes(queryLower)) score += 3;
-        
+
         // 3. Global Scope Boost
         if (entry.scope === 'global') score += 1;
 
@@ -229,7 +229,7 @@ export class ToolUsageLogger {
   logToolCall(tool: string, success: boolean, error?: string) {
     const call = { timestamp: new Date(), tool, success, error };
     this.toolCalls.push(call);
-    
+
     // Console visibility for debugging
     const icon = success ? '🟢' : '🔴';
     console.log(`${icon} Tool: ${tool} | ${error ? error : 'Success'}`);
