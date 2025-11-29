@@ -27,6 +27,27 @@ export const UNIVERSAL_TOOL_DEFINITIONS = {
       required: ['name', 'content']
     }
   },
+  delete_file: {
+    name: 'delete_file',
+    description: 'Delete a file from the project. Use carefully.',
+    parameters: {
+      type: Type.OBJECT,
+      properties: {
+        name: { type: Type.STRING, description: 'The file path to delete' }
+      },
+      required: ['name']
+    }
+  },
+  list_files: {
+    name: 'list_files',
+    description: 'List all files in the project structure to understand the directory layout.',
+    parameters: {
+      type: Type.OBJECT,
+      properties: {
+        path: { type: Type.STRING, description: 'Optional subdirectory to list (defaults to root)' }
+      }
+    }
+  },
   search_files: {
     name: 'search_files',
     description: 'Search for code patterns or text across the project.',
@@ -40,7 +61,7 @@ export const UNIVERSAL_TOOL_DEFINITIONS = {
   },
   read_file: {
     name: 'read_file',
-    description: 'Read the contents of a file.',
+    description: 'Read the contents of a file. If the file is not found, the tool will return a list of valid files.',
     parameters: {
       type: Type.OBJECT,
       properties: {
