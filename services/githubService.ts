@@ -242,8 +242,8 @@ const fetchViaZip = async (owner: string, repo: string, token?: string): Promise
     const zip = await JSZip.loadAsync(blob);
 
     const files: ProjectFile[] = [];
-    const MAX_FILES = 100;
-    const MAX_SIZE = 200 * 1024; // 200KB
+    const MAX_FILES = 500;
+    const MAX_SIZE = 1000 * 1024; // 1MB
 
     const entries = Object.keys(zip.files).filter(path => !zip.files[path].dir);
     const sortedEntries = prioritizeEntries(entries);
