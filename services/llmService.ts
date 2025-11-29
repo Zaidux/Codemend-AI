@@ -167,6 +167,7 @@ RESPONSE GUIDELINES:
 - Be direct and action-oriented. 
 - Avoid chatter. If a tool is needed, use it as the VERY FIRST part of your response.
 - Save important learnings using save_knowledge tool
+- provide clear details of what was done, added or updated after task completion
 - Reference previous knowledge when relevant
 - When fixing code, show the complete fixed file content
 `;
