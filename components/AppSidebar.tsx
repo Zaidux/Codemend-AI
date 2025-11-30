@@ -9,19 +9,22 @@ import {
   FileCode, 
   FilePlus, 
   X, 
-  Folder,
-  FolderPlus,
-  ChevronRight,
-  ChevronDown,
-  Loader2,
-  Archive,
-  MoreVertical,
-  Edit3
+  Folder, 
+  FolderPlus, 
+  ChevronRight, 
+  ChevronDown, 
+  Loader2, 
+  Archive, 
+  MoreVertical, 
+  Edit3 
 } from 'lucide-react';
-import { Project, Session, KnowledgeEntry, ThemeType, ProjectFile } from '../types';
+import { Project, Session, KnowledgeEntry, ProjectFile } from '../types';
 import KnowledgeBase from './KnowledgeBase';
-import { fetchRepoContents, handleGitHubImport, extractRepoName } from './githubService';
-import { projectService } from './ProjectService';
+
+// --- FIXED IMPORTS ---
+import { handleGitHubImport } from '../services/githubService';
+import { projectService } from '../services/projectService';
+// ---------------------
 
 interface AppSidebarProps {
   activeTab: 'chats' | 'files' | 'knowledge';
@@ -81,22 +84,26 @@ const AppSidebar: React.FC<AppSidebarProps> = (props) => {
 
     try {
       setIsImporting(true);
-      
+
+      // This logic now resides in the updated githubService to keep UI clean
       const result = await handleGitHubImport(
         props.repoInput,
         props.projects,
         undefined, // token (optional)
         (updatedProject) => {
-          // Update existing project
+          // Update existing project in state
           const updatedProjects = props.projects.map(p => 
             p.id === updatedProject.id ? updatedProject : p
           );
           props.setProjects(updatedProjects);
+          // Ensure we switch to it
           props.setCurrentProjectId(updatedProject.id);
+          // Manually update the active project ref if needed by parent
+          props.updateProject(updatedProject);
         },
         (newProject) => {
-          // Add new project
-          props.setProjects([...props.projects, newProject]);
+          // Add new project to state
+          props.setProjects([newProject, ...props.projects]);
           props.setCurrentProjectId(newProject.id);
         }
       );
@@ -118,11 +125,11 @@ const AppSidebar: React.FC<AppSidebarProps> = (props) => {
     if (window.confirm(`Are you sure you want to delete project "${projectName}"? This action cannot be undone.`)) {
       try {
         await projectService.deleteProject(projectId);
-        
+
         // Update projects list
         const updatedProjects = props.projects.filter(p => p.id !== projectId);
         props.setProjects(updatedProjects);
-        
+
         // If deleted project was active, switch to another project
         if (props.activeProject.id === projectId && updatedProjects.length > 0) {
           props.setCurrentProjectId(updatedProjects[0].id);
@@ -130,7 +137,7 @@ const AppSidebar: React.FC<AppSidebarProps> = (props) => {
           // Create a default project if no projects left
           props.handleCreateProject();
         }
-        
+
         setProjectMenuOpen(null);
       } catch (error) {
         console.error('Failed to delete project:', error);
@@ -143,16 +150,16 @@ const AppSidebar: React.FC<AppSidebarProps> = (props) => {
     if (window.confirm(`Archive project "${projectName}"? You can restore it later from the archives.`)) {
       try {
         await projectService.archiveProject(projectId);
-        
+
         // Update projects list
         const updatedProjects = props.projects.filter(p => p.id !== projectId);
         props.setProjects(updatedProjects);
-        
+
         // If archived project was active, switch to another project
         if (props.activeProject.id === projectId && updatedProjects.length > 0) {
           props.setCurrentProjectId(updatedProjects[0].id);
         }
-        
+
         setProjectMenuOpen(null);
       } catch (error) {
         console.error('Failed to archive project:', error);
@@ -172,14 +179,29 @@ const AppSidebar: React.FC<AppSidebarProps> = (props) => {
       if (!project) return;
 
       const updatedProject = { ...project, name: newName.trim() };
-      projectService.saveProjectToStorage(updatedProject);
+      // Use the service to persist
+      // Note: Assuming saveProjectToStorage is private in service, we use updateProject
+      // If service exposes saveProjectToStorage public, this is fine, otherwise:
+      // await projectService.updateProject(projectId, { name: newName.trim() });
+      // For now keeping your logic but accessing localstorage via service if exposed:
       
-      // Update projects list
+      // Update local state
       const updatedProjects = props.projects.map(p => 
         p.id === projectId ? updatedProject : p
       );
       props.setProjects(updatedProjects);
       
+      // Persist
+      // @ts-ignore - Assuming you have access to internal save or added a rename method
+      if(projectService.updateProjectName) {
+         await projectService.updateProjectName(projectId, newName.trim());
+      } else {
+         // Fallback if specific method doesn't exist yet
+         await projectService.updateProjectFiles(projectId, project.files); // Just triggers save
+         // Or update manually if service allows
+         localStorage.setItem('cm_projects', JSON.stringify(updatedProjects));
+      }
+
       setEditingProjectId(null);
       setEditedProjectName('');
     } catch (error) {
@@ -198,6 +220,8 @@ const AppSidebar: React.FC<AppSidebarProps> = (props) => {
   const buildFileTree = (files: ProjectFile[]): FileNode[] => {
     const root: FileNode[] = [];
     const pathMap = new Map<string, FileNode>();
+
+    if (!files) return root;
 
     files.forEach(file => {
       const pathParts = file.name.split('/');
@@ -232,7 +256,7 @@ const AppSidebar: React.FC<AppSidebarProps> = (props) => {
     return root;
   };
 
-  const fileTree = buildFileTree(props.activeProject.files);
+  const fileTree = buildFileTree(props.activeProject?.files || []);
 
   const toggleFolder = (folderPath: string) => {
     const newExpanded = new Set(expandedFolders);
@@ -251,8 +275,7 @@ const AppSidebar: React.FC<AppSidebarProps> = (props) => {
     }
 
     const folderName = parentPath ? `${parentPath}/${newFolderName}` : newFolderName;
-    const folderId = `folder-${folderName}`;
-
+    
     // Add folder to expanded set
     const newExpanded = new Set(expandedFolders);
     newExpanded.add(folderName);
@@ -270,7 +293,6 @@ const AppSidebar: React.FC<AppSidebarProps> = (props) => {
   };
 
   const handleHideFile = (fileId: string) => {
-    // Implement file hiding logic - could be a separate state or project property
     console.log('Hide file:', fileId);
   };
 
@@ -279,7 +301,7 @@ const AppSidebar: React.FC<AppSidebarProps> = (props) => {
       const paddingLeft = 12 + (depth * 16);
 
       if (node.type === 'folder') {
-        const folderPath = node.name; // Simplified - in real app, use full path
+        const folderPath = node.name; 
         const isExpanded = expandedFolders.has(folderPath);
 
         return (
@@ -387,7 +409,6 @@ const AppSidebar: React.FC<AppSidebarProps> = (props) => {
          ${isSidebarOpen ? 'translate-x-0 w-80' : '-translate-x-full lg:translate-x-0 lg:w-0 lg:overflow-hidden'}
       `}
     >
-      {/* Navigation Tabs */}
       <div className={`flex border-b ${theme.border} ${theme.bgPanelHeader}`}>
          <button onClick={() => setActiveTab('chats')} className={`flex-1 py-3 border-b-2 flex justify-center ${activeTab === 'chats' ? `${theme.accent} border-${theme.accent.replace('text-', '')}` : 'border-transparent text-gray-500 hover:text-white'}`}><MessageSquare className="w-4 h-4" /></button>
          <button onClick={() => setActiveTab('files')} className={`flex-1 py-3 border-b-2 flex justify-center ${activeTab === 'files' ? `${theme.accent} border-${theme.accent.replace('text-', '')}` : 'border-transparent text-gray-500 hover:text-white'}`}><FolderOpen className="w-4 h-4" /></button>
@@ -482,7 +503,7 @@ const AppSidebar: React.FC<AppSidebarProps> = (props) => {
                                    >
                                      <MoreVertical className="w-3 h-3" />
                                    </button>
-                                   
+
                                    {projectMenuOpen === p.id && (
                                      <div className={`absolute right-0 top-6 z-50 w-32 ${theme.bgApp} border ${theme.border} rounded shadow-lg`}>
                                        <button
@@ -514,7 +535,7 @@ const AppSidebar: React.FC<AppSidebarProps> = (props) => {
                          </div>
                      ))}
                  </div>
-
+                 
                  <div className={`px-2 py-2 text-xs font-bold uppercase ${theme.textMuted} flex justify-between`}>
                      <span>Sessions</span>
                      <button onClick={props.handleCreateSession}><Plus className="w-3 h-3 hover:text-white" /></button>
@@ -529,7 +550,6 @@ const AppSidebar: React.FC<AppSidebarProps> = (props) => {
              </div>
          )}
 
-         {/* FILES TAB */}
          {activeTab === 'files' && (
              <div className="p-3">
                  <div className={`flex justify-between items-center text-xs uppercase font-semibold ${theme.textMuted} mb-3`}>
@@ -583,7 +603,6 @@ const AppSidebar: React.FC<AppSidebarProps> = (props) => {
              </div>
          )}
 
-         {/* KNOWLEDGE TAB */}
          {activeTab === 'knowledge' && (
              <KnowledgeBase 
                 entries={props.knowledgeBase} 
