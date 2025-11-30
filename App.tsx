@@ -11,6 +11,7 @@ import TodoList from './components/TodoList';
 import DiffViewer from './components/DiffViewer';
 import AppSidebar from './components/AppSidebar';
 import ProcessLog from './components/ProcessLog';
+import Terminal from './components/Terminal'; // Imported Terminal
 
 import { THEMES, DEFAULT_LLM_CONFIG, DEFAULT_ROLES } from './constants';
 import { CodeLanguage, AppMode, ThemeType, Session, ChatMessage, ViewMode, ProjectFile, LLMConfig, Project, Attachment, AgentRole, KnowledgeEntry, TodoItem, FileDiff, ProjectSummary } from './types';
@@ -303,6 +304,21 @@ const App: React.FC = () => {
           };
           reader.readAsText(file);
       }
+  };
+
+  // --- TERMINAL HELP HANDLER ---
+  const handleTerminalError = (errorLogs: string) => {
+    // 1. Switch to chat to see the discussion
+    if (viewMode === 'classic') {
+       // In classic mode, chat is on the right, ensure sidebar doesn't block if mobile
+       if (window.innerWidth < 1024) setIsSidebarOpen(false); 
+    } 
+    
+    // 2. Populate input with the error log context
+    const helpRequest = `I ran into this error in the terminal:\n\n\`\`\`\n${errorLogs}\n\`\`\`\n\nCan you help me fix this?`;
+    setInputInstruction(helpRequest);
+    
+    // 3. Focus the chat input (optional, requires ref)
   };
 
   const toggleRecording = async () => {
@@ -801,6 +817,14 @@ const App: React.FC = () => {
           </div>
         </div>
       </div>
+
+      {/* TERMINAL OVERLAY */}
+      <Terminal 
+        files={activeProject.files}
+        theme={theme}
+        onAIHelpRequest={handleTerminalError}
+      />
+
       {showSettings && (
         <SettingsModal 
           theme={theme} 
