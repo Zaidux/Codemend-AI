@@ -20,11 +20,8 @@ import {
 } from 'lucide-react';
 import { Project, Session, KnowledgeEntry, ProjectFile } from '../types';
 import KnowledgeBase from './KnowledgeBase';
-
-// --- FIXED IMPORTS ---
 import { handleGitHubImport } from '../services/githubService';
 import { projectService } from '../services/projectService';
-// ---------------------
 
 interface AppSidebarProps {
   activeTab: 'chats' | 'files' | 'knowledge';
@@ -55,7 +52,8 @@ interface AppSidebarProps {
   setKnowledgeBase: (kb: KnowledgeEntry[]) => void;
   viewMode: string;
   setIsEditorOpen: (open: boolean) => void;
-  setProjects: (projects: Project[]) => void;
+  // FIX: Make setProjects optional with fallback
+  setProjects?: (projects: Project[]) => void;
 }
 
 interface FileNode {
@@ -78,6 +76,15 @@ const AppSidebar: React.FC<AppSidebarProps> = (props) => {
   const [editingProjectId, setEditingProjectId] = useState<string | null>(null);
   const [editedProjectName, setEditedProjectName] = useState('');
 
+  // FIX: Safe project state updater
+  const updateProjectsState = (updatedProjects: Project[]) => {
+    if (props.setProjects) {
+      props.setProjects(updatedProjects);
+    } else {
+      console.warn('setProjects function not provided. Projects state may not update correctly.');
+    }
+  };
+
   // Enhanced GitHub import with duplication handling
   const handleGithubImportWrapper = async () => {
     if (!props.repoInput.trim()) return;
@@ -85,7 +92,6 @@ const AppSidebar: React.FC<AppSidebarProps> = (props) => {
     try {
       setIsImporting(true);
 
-      // This logic now resides in the updated githubService to keep UI clean
       const result = await handleGitHubImport(
         props.repoInput,
         props.projects,
@@ -95,7 +101,7 @@ const AppSidebar: React.FC<AppSidebarProps> = (props) => {
           const updatedProjects = props.projects.map(p => 
             p.id === updatedProject.id ? updatedProject : p
           );
-          props.setProjects(updatedProjects);
+          updateProjectsState(updatedProjects);
           // Ensure we switch to it
           props.setCurrentProjectId(updatedProject.id);
           // Manually update the active project ref if needed by parent
@@ -103,7 +109,8 @@ const AppSidebar: React.FC<AppSidebarProps> = (props) => {
         },
         (newProject) => {
           // Add new project to state
-          props.setProjects([newProject, ...props.projects]);
+          const updatedProjects = [newProject, ...props.projects];
+          updateProjectsState(updatedProjects);
           props.setCurrentProjectId(newProject.id);
         }
       );
@@ -128,14 +135,16 @@ const AppSidebar: React.FC<AppSidebarProps> = (props) => {
 
         // Update projects list
         const updatedProjects = props.projects.filter(p => p.id !== projectId);
-        props.setProjects(updatedProjects);
+        updateProjectsState(updatedProjects);
 
         // If deleted project was active, switch to another project
-        if (props.activeProject.id === projectId && updatedProjects.length > 0) {
-          props.setCurrentProjectId(updatedProjects[0].id);
-        } else if (updatedProjects.length === 0) {
-          // Create a default project if no projects left
-          props.handleCreateProject();
+        if (props.activeProject.id === projectId) {
+          if (updatedProjects.length > 0) {
+            props.setCurrentProjectId(updatedProjects[0].id);
+          } else {
+            // Create a default project if no projects left
+            props.handleCreateProject();
+          }
         }
 
         setProjectMenuOpen(null);
@@ -153,7 +162,7 @@ const AppSidebar: React.FC<AppSidebarProps> = (props) => {
 
         // Update projects list
         const updatedProjects = props.projects.filter(p => p.id !== projectId);
-        props.setProjects(updatedProjects);
+        updateProjectsState(updatedProjects);
 
         // If archived project was active, switch to another project
         if (props.activeProject.id === projectId && updatedProjects.length > 0) {
@@ -179,28 +188,15 @@ const AppSidebar: React.FC<AppSidebarProps> = (props) => {
       if (!project) return;
 
       const updatedProject = { ...project, name: newName.trim() };
-      // Use the service to persist
-      // Note: Assuming saveProjectToStorage is private in service, we use updateProject
-      // If service exposes saveProjectToStorage public, this is fine, otherwise:
-      // await projectService.updateProject(projectId, { name: newName.trim() });
-      // For now keeping your logic but accessing localstorage via service if exposed:
       
       // Update local state
       const updatedProjects = props.projects.map(p => 
         p.id === projectId ? updatedProject : p
       );
-      props.setProjects(updatedProjects);
-      
-      // Persist
-      // @ts-ignore - Assuming you have access to internal save or added a rename method
-      if(projectService.updateProjectName) {
-         await projectService.updateProjectName(projectId, newName.trim());
-      } else {
-         // Fallback if specific method doesn't exist yet
-         await projectService.updateProjectFiles(projectId, project.files); // Just triggers save
-         // Or update manually if service allows
-         localStorage.setItem('cm_projects', JSON.stringify(updatedProjects));
-      }
+      updateProjectsState(updatedProjects);
+
+      // Persist to storage using service method
+      await projectService.updateProject(projectId, { name: newName.trim() });
 
       setEditingProjectId(null);
       setEditedProjectName('');
@@ -275,7 +271,7 @@ const AppSidebar: React.FC<AppSidebarProps> = (props) => {
     }
 
     const folderName = parentPath ? `${parentPath}/${newFolderName}` : newFolderName;
-    
+
     // Add folder to expanded set
     const newExpanded = new Set(expandedFolders);
     newExpanded.add(folderName);
@@ -535,7 +531,7 @@ const AppSidebar: React.FC<AppSidebarProps> = (props) => {
                          </div>
                      ))}
                  </div>
-                 
+
                  <div className={`px-2 py-2 text-xs font-bold uppercase ${theme.textMuted} flex justify-between`}>
                      <span>Sessions</span>
                      <button onClick={props.handleCreateSession}><Plus className="w-3 h-3 hover:text-white" /></button>
