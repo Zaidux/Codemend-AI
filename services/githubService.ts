@@ -37,21 +37,39 @@ const getLanguageFromExt = (filename: string): CodeLanguage => {
     return extensionMap[ext] || CodeLanguage.OTHER;
 };
 
+// Helper: Extract Repo Name from URL or String
+export const extractRepoName = (urlOrPath: string): string => {
+    if (!urlOrPath) return '';
+    
+    // Handle both "owner/repo" and full URL formats
+    if (urlOrPath.includes('github.com/')) {
+        const match = urlOrPath.match(/github\.com\/([^\/]+\/[^\/]+)/);
+        if (match) {
+            return match[1].replace(/\.git$/, '');
+        }
+    }
+    // Clean up trailing slashes or .git extensions if input is just owner/repo
+    return urlOrPath.replace(/^\//, '').replace(/\/$/, '').replace(/\.git$/, '');
+};
+
+// Helper: Find duplicate project
+export const findDuplicateProject = (projects: Project[], repoUrl: string): Project | null => {
+    const repoName = extractRepoName(repoUrl);
+    
+    return projects.find(project => 
+        project.name.toLowerCase() === repoName.toLowerCase() ||
+        project.githubUrl?.toLowerCase() === repoUrl.toLowerCase() ||
+        (project.githubUrl && extractRepoName(project.githubUrl) === repoName)
+    ) || null;
+};
+
 // Parse GitHub URL or owner/repo format
 export const parseGitHubUrl = (input: string): { owner: string; repo: string } => {
-    input = input.trim();
-    const cleaned = input
-        .replace(/^https?:\/\/github.com\//, '')
-        .replace(/^github.com\//, '')
-        .replace(/\.git$/, '')
-        .replace(/^\//, '')
-        .replace(/\/$/, '');
-
+    const cleaned = extractRepoName(input);
     const parts = cleaned.split('/');
     if (parts.length < 2) {
         throw new Error('Invalid GitHub URL. Use format: owner/repo or https://github.com/owner/repo');
     }
-
     return { owner: parts[0], repo: parts[1] };
 };
 
@@ -74,7 +92,7 @@ const fetchWithCorsProxy = async (url: string, token?: string): Promise<Response
         console.warn('Direct fetch failed, trying CORS proxy...', error);
     }
 
-    // Fallback 1: Use GitHub's raw content via proxy
+    // Fallback: Use GitHub's raw content via proxy
     const proxyUrls = [
         `https://corsproxy.io/?${encodeURIComponent(url)}`,
         `https://api.allorigins.win/raw?url=${encodeURIComponent(url)}`,
@@ -83,7 +101,6 @@ const fetchWithCorsProxy = async (url: string, token?: string): Promise<Response
 
     for (const proxyUrl of proxyUrls) {
         try {
-            console.log(`Trying proxy: ${proxyUrl}`);
             const response = await fetch(proxyUrl, { headers });
             if (response.ok) return response;
         } catch (error) {
@@ -95,7 +112,7 @@ const fetchWithCorsProxy = async (url: string, token?: string): Promise<Response
     throw new Error('All CORS proxies failed. Please try with a GitHub token or use the backend import.');
 };
 
-// Alternative: Fetch via GitHub Contents API (slower but more reliable for public repos)
+// Fetch via GitHub Contents API
 const fetchViaContentsAPI = async (owner: string, repo: string, token?: string): Promise<ProjectFile[]> => {
     const headers: HeadersInit = {
         'User-Agent': 'CodeMend-AI',
@@ -104,17 +121,17 @@ const fetchViaContentsAPI = async (owner: string, repo: string, token?: string):
     if (token) headers['Authorization'] = `token ${token}`;
 
     const files: ProjectFile[] = [];
-    const MAX_FILES = 50; // Lower limit for API method
+    const MAX_FILES = 50; 
 
     const fetchRecursive = async (path: string = '') => {
         if (files.length >= MAX_FILES) return;
 
         const url = `${GITHUB_API_BASE}/repos/${owner}/${repo}/contents/${path}`;
-        
+
         try {
             const response = await fetchWithCorsProxy(url, token);
             if (!response.ok) throw new Error(`API error: ${response.status}`);
-            
+
             const contents = await response.json();
 
             for (const item of contents) {
@@ -122,18 +139,11 @@ const fetchViaContentsAPI = async (owner: string, repo: string, token?: string):
 
                 if (item.type === 'file') {
                     if (isIgnored(item.name) || isIgnored(item.path)) continue;
-
-                    // Only fetch text-based files
                     if (!isTextFile(item.name)) continue;
 
                     try {
-                        // For small files, we can get content directly
-                        if (item.size > 100 * 1024) { // 100KB limit
-                            console.warn(`Skipping large file: ${item.path} (${item.size} bytes)`);
-                            continue;
-                        }
+                        if (item.size > 100 * 1024) continue;
 
-                        // If content is already provided (small files)
                         if (item.content && item.encoding === 'base64') {
                             const content = atob(item.content);
                             files.push({
@@ -143,7 +153,6 @@ const fetchViaContentsAPI = async (owner: string, repo: string, token?: string):
                                 content: content
                             });
                         } else {
-                            // Fetch file content separately
                             const fileResponse = await fetchWithCorsProxy(item.download_url, token);
                             if (fileResponse.ok) {
                                 const content = await fileResponse.text();
@@ -159,7 +168,6 @@ const fetchViaContentsAPI = async (owner: string, repo: string, token?: string):
                         console.warn(`Failed to fetch ${item.path}:`, error);
                     }
                 } else if (item.type === 'dir') {
-                    // Recursively fetch directory contents
                     await fetchRecursive(item.path);
                 }
             }
@@ -172,78 +180,29 @@ const fetchViaContentsAPI = async (owner: string, repo: string, token?: string):
     return files;
 };
 
-export const fetchRepoContents = async (input: string, token?: string): Promise<Project> => {
-    const { owner, repo } = parseGitHubUrl(input);
-
-    try {
-        console.log(`🚀 Fetching repository: ${owner}/${repo}`);
-
-        // Method 1: Try ZIP download first (most efficient)
-        try {
-            return await fetchViaZip(owner, repo, token);
-        } catch (zipError) {
-            console.warn('ZIP method failed, trying Contents API...', zipError);
-            
-            // Method 2: Fallback to Contents API
-            const files = await fetchViaContentsAPI(owner, repo, token);
-            
-            if (files.length === 0) {
-                throw new Error('No readable code files found. Repository might be private or empty.');
-            }
-
-            return {
-                id: crypto.randomUUID(),
-                name: `${owner}/${repo}`,
-                files: files,
-                activeFileId: files[0].id,
-                lastModified: Date.now()
-            };
-        }
-
-    } catch (error: any) {
-        console.error('GitHub Import Error:', error);
-        
-        // Provide helpful error messages
-        if (error.message.includes('404') || error.message.includes('Not Found')) {
-            throw new Error(`Repository "${owner}/${repo}" not found. Check the spelling or ensure it's public.`);
-        } else if (error.message.includes('403') || error.message.includes('API rate limit')) {
-            throw new Error('GitHub API rate limit exceeded. Please add a GitHub token or try again later.');
-        } else if (error.message.includes('CORS')) {
-            throw new Error('CORS error. Please use a GitHub token or try the backend import feature.');
-        } else {
-            throw new Error(`Import failed: ${error.message}`);
-        }
-    }
-};
-
-const fetchViaZip = async (owner: string, repo: string, token?: string): Promise<Project> => {
+const fetchViaZip = async (owner: string, repo: string, token?: string): Promise<{name: string, files: ProjectFile[]}> => {
     const headers: HeadersInit = {
         'User-Agent': 'CodeMend-AI',
         'Accept': 'application/vnd.github.v3+json'
     };
     if (token) headers['Authorization'] = `token ${token}`;
 
-    // 1. Fetch Repository Metadata to get default branch
     const metaRes = await fetchWithCorsProxy(`${GITHUB_API_BASE}/repos/${owner}/${repo}`, token);
     if (!metaRes.ok) throw new Error(`Repo not found or private. Status: ${metaRes.status}`);
     const meta = await metaRes.json();
     const defaultBranch = meta.default_branch || 'main';
 
-    // 2. Fetch the ZIP archive
     const zipUrl = `${GITHUB_API_BASE}/repos/${owner}/${repo}/zipball/${defaultBranch}`;
     const zipRes = await fetchWithCorsProxy(zipUrl, token);
 
-    if (!zipRes.ok) {
-        throw new Error(`Failed to download repo archive: ${zipRes.statusText}`);
-    }
+    if (!zipRes.ok) throw new Error(`Failed to download repo archive: ${zipRes.statusText}`);
 
-    // 3. Process the ZIP file
     const blob = await zipRes.blob();
     const zip = await JSZip.loadAsync(blob);
 
     const files: ProjectFile[] = [];
     const MAX_FILES = 500;
-    const MAX_SIZE = 1000 * 1024; // 1MB
+    const MAX_SIZE = 1000 * 1024;
 
     const entries = Object.keys(zip.files).filter(path => !zip.files[path].dir);
     const sortedEntries = prioritizeEntries(entries);
@@ -256,19 +215,9 @@ const fetchViaZip = async (owner: string, repo: string, token?: string): Promise
 
         try {
             const content = await fileEntry.async('string');
+            if (content.substring(0, 1000).includes('\u0000')) continue;
+            if (content.length > MAX_SIZE) continue;
 
-            // Check for binary files
-            if (content.substring(0, 1000).includes('\u0000')) {
-                console.warn(`Skipping binary file: ${path}`);
-                continue;
-            }
-
-            if (content.length > MAX_SIZE) {
-                console.warn(`Skipping large file: ${path} (${content.length} bytes)`);
-                continue;
-            }
-
-            // Clean path (remove the top-level directory from GitHub zips)
             const cleanPath = path.substring(path.indexOf('/') + 1);
             if (!cleanPath) continue;
 
@@ -287,53 +236,28 @@ const fetchViaZip = async (owner: string, repo: string, token?: string): Promise
     if (files.length === 0) throw new Error("No readable code files found.");
 
     return {
-        id: crypto.randomUUID(),
         name: `${owner}/${repo}`,
-        files: files,
-        activeFileId: files[0].id,
-        lastModified: Date.now()
+        files: files
     };
 };
 
 const prioritizeEntries = (paths: string[]): string[] => {
     return paths.sort((a, b) => {
-        // Priority files (config, root files)
-        const priorityFiles = ['package.json', 'README.md', 'tsconfig.json', 'webpack.config.js', 'index.js', 'app.js', 'main.js'];
-        
+        const priorityFiles = ['package.json', 'README.md', 'tsconfig.json', 'webpack.config.js', 'index.js', 'main.js'];
         const isPriorityA = priorityFiles.some(f => a.includes(f));
         const isPriorityB = priorityFiles.some(f => b.includes(f));
         if (isPriorityA && !isPriorityB) return -1;
         if (!isPriorityA && isPriorityB) return 1;
-
-        // Prefer shorter paths (root files)
-        const depthA = a.split('/').length;
-        const depthB = b.split('/').length;
-        if (depthA !== depthB) return depthA - depthB;
-
-        // Prefer code files over others
-        const extA = a.split('.').pop() || '';
-        const extB = b.split('.').pop() || '';
-        const codeExts = ['ts', 'js', 'jsx', 'tsx', 'json', 'html', 'css', 'py', 'java'];
-        const isCodeA = codeExts.includes(extA);
-        const isCodeB = codeExts.includes(extB);
-        if (isCodeA && !isCodeB) return -1;
-        if (!isCodeA && isCodeB) return 1;
-
         return a.localeCompare(b);
     });
 };
 
 const isIgnored = (path: string): boolean => {
     const ignoredPatterns = [
-        'node_modules', '.git', 'dist', 'build', '.DS_Store',
-        'package-lock.json', 'yarn.lock', 'pnpm-lock.yaml',
-        '.png', '.jpg', '.jpeg', '.gif', '.ico', '.pdf', '.zip',
-        '.tar', '.gz', '.mp4', '.mp3', '.wav', '.avi', '.mov',
-        '.exe', '.dll', '.so', '.dylib'
+        'node_modules', '.git', 'dist', 'build', '.DS_Store', 'package-lock.json', 
+        '.png', '.jpg', '.jpeg', '.gif', '.ico', '.pdf', '.zip', '.exe', '.dll'
     ];
-    return ignoredPatterns.some(pattern => 
-        path.toLowerCase().includes(pattern.toLowerCase())
-    );
+    return ignoredPatterns.some(pattern => path.toLowerCase().includes(pattern.toLowerCase()));
 };
 
 const isTextFile = (filename: string): boolean => {
@@ -347,22 +271,108 @@ const isTextFile = (filename: string): boolean => {
     return textExtensions.includes(ext);
 };
 
-// Alternative simple fetch for public repos (no auth needed)
-export const fetchPublicRepoSimple = async (input: string): Promise<Project> => {
+// Main Export function - returns project data without ID for flexibility
+export const fetchRepoContents = async (input: string, token?: string): Promise<{name: string, files: ProjectFile[]}> => {
     const { owner, repo } = parseGitHubUrl(input);
-    
-    // Use raw.githubusercontent.com for direct file access
-    const files = await fetchViaContentsAPI(owner, repo);
-    
-    if (files.length === 0) {
-        throw new Error('No files found or repository is private.');
+
+    try {
+        console.log(`🚀 Fetching repository: ${owner}/${repo}`);
+
+        try {
+            return await fetchViaZip(owner, repo, token);
+        } catch (zipError) {
+            console.warn('ZIP method failed, trying Contents API...', zipError);
+            const files = await fetchViaContentsAPI(owner, repo, token);
+
+            if (files.length === 0) {
+                throw new Error('No readable code files found. Repository might be private or empty.');
+            }
+
+            return {
+                name: `${owner}/${repo}`,
+                files: files
+            };
+        }
+
+    } catch (error: any) {
+        console.error('GitHub Import Error:', error);
+        if (error.message.includes('404') || error.message.includes('Not Found')) {
+            throw new Error(`Repository "${owner}/${repo}" not found. Check the spelling or ensure it's public.`);
+        } else if (error.message.includes('403') || error.message.includes('API rate limit')) {
+            throw new Error('GitHub API rate limit exceeded. Please add a GitHub token.');
+        } else {
+            throw new Error(`Import failed: ${error.message}`);
+        }
+    }
+};
+
+// NEW: Function to update existing project with latest GitHub contents
+export const updateExistingProject = async (project: Project, token?: string): Promise<Project> => {
+    if (!project.githubUrl) {
+        throw new Error('Project does not have a GitHub URL to update from');
     }
 
-    return {
-        id: crypto.randomUUID(),
-        name: `${owner}/${repo}`,
-        files: files,
-        activeFileId: files[0].id,
-        lastModified: Date.now()
-    };
+    try {
+        console.log(`🔄 Updating project: ${project.name}`);
+        
+        const { name, files } = await fetchRepoContents(project.githubUrl, token);
+        
+        // Preserve the original project ID and merge with new data
+        return {
+            ...project,
+            name: name,
+            files: files,
+            activeFileId: files[0]?.id || project.activeFileId,
+            lastModified: Date.now()
+        };
+    } catch (error) {
+        console.error('Failed to update project:', error);
+        throw new Error(`Update failed: ${error instanceof Error ? error.message : 'Unknown error'}`);
+    }
+};
+
+// NEW: Enhanced GitHub import handler with duplication check
+export const handleGitHubImport = async (
+    repoInput: string,
+    existingProjects: Project[],
+    token?: string,
+    onUpdate?: (project: Project) => void,
+    onCreate?: (project: Project) => void
+): Promise<{action: 'created' | 'updated' | 'cancelled', project?: Project}> => {
+    if (!repoInput.trim()) {
+        throw new Error('Please enter a GitHub repository URL or owner/repo');
+    }
+
+    const repoName = extractRepoName(repoInput);
+    const existingProject = findDuplicateProject(existingProjects, repoInput);
+
+    if (existingProject) {
+        // Ask user if they want to update the existing project
+        const shouldUpdate = window.confirm(
+            `Project "${existingProject.name}" already exists. Do you want to update it with the latest changes from GitHub?`
+        );
+        
+        if (shouldUpdate) {
+            const updatedProject = await updateExistingProject(existingProject, token);
+            onUpdate?.(updatedProject);
+            return { action: 'updated', project: updatedProject };
+        } else {
+            return { action: 'cancelled' };
+        }
+    } else {
+        // Create new project
+        const { name, files } = await fetchRepoContents(repoInput, token);
+        
+        const newProject: Project = {
+            id: crypto.randomUUID(),
+            name: name,
+            files: files,
+            activeFileId: files[0]?.id || '',
+            githubUrl: repoInput,
+            lastModified: Date.now()
+        };
+        
+        onCreate?.(newProject);
+        return { action: 'created', project: newProject };
+    }
 };
