@@ -11,7 +11,7 @@ import TodoList from './components/TodoList';
 import DiffViewer from './components/DiffViewer';
 import AppSidebar from './components/AppSidebar';
 import ProcessLog from './components/ProcessLog';
-import Terminal from './components/Terminal'; // Imported Terminal
+import Terminal from './components/Terminal'; 
 
 import { THEMES, DEFAULT_LLM_CONFIG, DEFAULT_ROLES } from './constants';
 import { CodeLanguage, AppMode, ThemeType, Session, ChatMessage, ViewMode, ProjectFile, LLMConfig, Project, Attachment, AgentRole, KnowledgeEntry, TodoItem, FileDiff, ProjectSummary } from './types';
@@ -313,11 +313,11 @@ const App: React.FC = () => {
        // In classic mode, chat is on the right, ensure sidebar doesn't block if mobile
        if (window.innerWidth < 1024) setIsSidebarOpen(false); 
     } 
-    
+
     // 2. Populate input with the error log context
     const helpRequest = `I ran into this error in the terminal:\n\n\`\`\`\n${errorLogs}\n\`\`\`\n\nCan you help me fix this?`;
     setInputInstruction(helpRequest);
-    
+
     // 3. Focus the chat input (optional, requires ref)
   };
 
@@ -563,6 +563,7 @@ const App: React.FC = () => {
             setCurrentSessionId={setCurrentSessionId} setSessions={setSessions} handleCreateFile={handleCreateFile}
             handleDeleteFile={handleDeleteFile} updateProject={updateProject} setKnowledgeBase={setKnowledgeBase}
             viewMode={viewMode} setIsEditorOpen={setIsEditorOpen}
+            setProjects={setProjects} // <--- ADDED THIS PROP
         />
       )}
 
