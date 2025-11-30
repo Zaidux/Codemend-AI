@@ -12,7 +12,11 @@ export class ProjectService {
     return ProjectService.instance;
   }
 
-  // --- UPDATED: createProject now accepts optional metadata/githubUrl ---
+  // FIX: Use consistent localStorage keys
+  private readonly PROJECTS_STORAGE_KEY = 'codemend-projects';
+  private readonly ARCHIVES_STORAGE_KEY = 'codemend-archives';
+
+  // Create project
   async createProject(name: string, files: ProjectFile[] = [], githubUrl?: string): Promise<Project> {
     const project: Project = {
       id: this.generateUUID(),
@@ -21,35 +25,30 @@ export class ProjectService {
       activeFileId: files[0]?.id || '',
       lastModified: Date.now(),
       createdAt: Date.now(),
-      githubUrl: githubUrl, // specific field if your type supports it
+      githubUrl: githubUrl,
       metadata: {
         description: '',
         tags: [],
         version: '1.0.0',
-        githubUrl: githubUrl // store in metadata as fallback
+        githubUrl: githubUrl
       }
     };
 
-    // Save to localStorage
     this.saveProjectToStorage(project);
     return project;
   }
 
-  // --- NEW: Helper to find existing project by Repo Name or URL ---
+  // Find project by repo
   async findProjectByRepo(repoInput: string): Promise<Project | null> {
     const cleanName = extractRepoName(repoInput).toLowerCase();
     if (!cleanName) return null;
 
     const projects = this.getAllProjectsFromStorage();
-    
-    return projects.find(p => {
-      // 1. Check direct name match (e.g., "facebook/react")
-      if (p.name.toLowerCase() === cleanName) return true;
 
-      // 2. Check metadata URL if it exists
+    return projects.find(p => {
+      if (p.name.toLowerCase() === cleanName) return true;
       const pRepo = p.metadata?.githubUrl ? extractRepoName(p.metadata.githubUrl) : '';
       if (pRepo.toLowerCase() === cleanName) return true;
-
       return false;
     }) || null;
   }
@@ -65,8 +64,8 @@ export class ProjectService {
     }
   }
 
-  // Update project files
-  async updateProjectFiles(projectId: string, files: ProjectFile[]): Promise<Project> {
+  // NEW: Generic project update method
+  async updateProject(projectId: string, updates: Partial<Project>): Promise<Project> {
     const project = await this.loadProject(projectId);
     if (!project) {
       throw new Error(`Project ${projectId} not found`);
@@ -74,12 +73,17 @@ export class ProjectService {
 
     const updatedProject: Project = {
       ...project,
-      files: files,
+      ...updates,
       lastModified: Date.now()
     };
 
     this.saveProjectToStorage(updatedProject);
     return updatedProject;
+  }
+
+  // Update project files
+  async updateProjectFiles(projectId: string, files: ProjectFile[]): Promise<Project> {
+    return this.updateProject(projectId, { files });
   }
 
   // Add or update a single file
@@ -93,11 +97,9 @@ export class ProjectService {
     let updatedFiles: ProjectFile[];
 
     if (existingFileIndex >= 0) {
-      // Update existing file
       updatedFiles = [...project.files];
       updatedFiles[existingFileIndex] = file;
     } else {
-      // Add new file
       updatedFiles = [...project.files, file];
     }
 
@@ -120,14 +122,14 @@ export class ProjectService {
     try {
       const projects = this.getAllProjectsFromStorage();
       const updatedProjects = projects.filter(p => p.id !== projectId);
-      localStorage.setItem('codemend-projects', JSON.stringify(updatedProjects));
+      localStorage.setItem(this.PROJECTS_STORAGE_KEY, JSON.stringify(updatedProjects));
     } catch (error) {
       console.error('Error deleting project:', error);
       throw new Error(`Failed to delete project: ${error}`);
     }
   }
 
-  // Archive project (move to separate storage)
+  // Archive project
   async archiveProject(projectId: string): Promise<void> {
     const project = await this.loadProject(projectId);
     if (!project) {
@@ -147,7 +149,7 @@ export class ProjectService {
     // Save to archive storage
     const archives = this.getArchivedProjectsFromStorage();
     archives.push(archivedProject);
-    localStorage.setItem('codemend-archives', JSON.stringify(archives));
+    localStorage.setItem(this.ARCHIVES_STORAGE_KEY, JSON.stringify(archives));
 
     // Remove from active projects
     await this.deleteProject(projectId);
@@ -177,7 +179,7 @@ export class ProjectService {
 
     // Remove from archives
     const updatedArchives = archives.filter(p => p.id !== projectId);
-    localStorage.setItem('codemend-archives', JSON.stringify(updatedArchives));
+    localStorage.setItem(this.ARCHIVES_STORAGE_KEY, JSON.stringify(updatedArchives));
 
     return restoredProject;
   }
@@ -196,7 +198,6 @@ export class ProjectService {
   async detectChanges(project: Project, externalFiles: ProjectFile[]): Promise<FileChange[]> {
     const changes: FileChange[] = [];
 
-    // Create maps for easier comparison
     const currentFilesMap = new Map(project.files.map(f => [f.name, f]));
     const externalFilesMap = new Map(externalFiles.map(f => [f.name, f]));
 
@@ -205,7 +206,6 @@ export class ProjectService {
       const currentFile = currentFilesMap.get(name);
 
       if (currentFile) {
-        // File exists in both - check if content changed
         if (currentFile.content !== externalFile.content) {
           changes.push({
             type: 'modified',
@@ -215,7 +215,6 @@ export class ProjectService {
           });
         }
       } else {
-        // New file in external source
         changes.push({
           type: 'added',
           file: externalFile,
@@ -253,7 +252,6 @@ export class ProjectService {
       switch (change.type) {
         case 'added':
         case 'modified':
-          // Add or update file
           const existingIndex = updatedFiles.findIndex(f => f.name === change.file.name);
           if (existingIndex >= 0) {
             updatedFiles[existingIndex] = change.file;
@@ -263,7 +261,6 @@ export class ProjectService {
           break;
 
         case 'deleted':
-          // Remove file
           updatedFiles = updatedFiles.filter(f => f.name !== change.file.name);
           break;
       }
@@ -279,18 +276,16 @@ export class ProjectService {
       throw new Error(`Project ${projectId} not found`);
     }
 
-    // Use the context service to generate summary
     return contextService.generateProjectSummary(project, project.files, {});
   }
 
-  // Export project as ZIP (placeholder for future implementation)
+  // Export project as ZIP
   async exportProject(projectId: string): Promise<Blob> {
     const project = await this.loadProject(projectId);
     if (!project) {
       throw new Error(`Project ${projectId} not found`);
     }
 
-    // For now, return a JSON blob
     const projectData = JSON.stringify(project, null, 2);
     return new Blob([projectData], { type: 'application/json' });
   }
@@ -305,7 +300,7 @@ export class ProjectService {
           const projectData = JSON.parse(e.target?.result as string);
           const project: Project = {
             ...projectData,
-            id: this.generateUUID(), // Generate new ID to avoid conflicts
+            id: this.generateUUID(),
             lastModified: Date.now()
           };
 
@@ -332,12 +327,12 @@ export class ProjectService {
       projects.push(project);
     }
 
-    localStorage.setItem('codemend-projects', JSON.stringify(projects));
+    localStorage.setItem(this.PROJECTS_STORAGE_KEY, JSON.stringify(projects));
   }
 
   private getAllProjectsFromStorage(): Project[] {
     try {
-      const stored = localStorage.getItem('codemend-projects');
+      const stored = localStorage.getItem(this.PROJECTS_STORAGE_KEY);
       return stored ? JSON.parse(stored) : [];
     } catch (error) {
       console.error('Error reading projects from storage:', error);
@@ -347,7 +342,7 @@ export class ProjectService {
 
   private getArchivedProjectsFromStorage(): Project[] {
     try {
-      const stored = localStorage.getItem('codemend-archives');
+      const stored = localStorage.getItem(this.ARCHIVES_STORAGE_KEY);
       return stored ? JSON.parse(stored) : [];
     } catch (error) {
       console.error('Error reading archives from storage:', error);
