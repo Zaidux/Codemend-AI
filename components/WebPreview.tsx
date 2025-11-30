@@ -1,12 +1,11 @@
 import * as React from 'react';
 import { 
   RefreshCw, AlertCircle, Code, FileText, Server, Globe, 
-  Smartphone, Monitor, Terminal, Activity, XCircle, CheckCircle, Wifi 
+  Smartphone, Monitor, Terminal, Activity, XCircle, CheckCircle, Wifi, Play
 } from 'lucide-react';
 import { ProjectFile, ThemeConfig, CodeLanguage } from '../types';
 
 // --- Types ---
-
 interface WebPreviewProps {
   files: ProjectFile[];
   theme: ThemeConfig;
@@ -33,45 +32,39 @@ interface NetworkRequest {
   timestamp: string;
 }
 
-// --- Helper: Generate Import Map ---
-const generateImportMap = () => {
-  return JSON.stringify({
-    imports: {
-      // We map 'react' to a blob ensuring we use the global UMD version if available, 
-      // or fall back to ESM. This fixes the Babel "React is not defined" issues.
-      "react": "https://esm.sh/react@18.2.0",
-      "react-dom/client": "https://esm.sh/react-dom@18.2.0/client",
-      "vue": "https://esm.sh/vue@3.3.4",
-      "canvas-confetti": "https://esm.sh/canvas-confetti",
-      "lodash": "https://esm.sh/lodash",
-      "axios": "https://esm.sh/axios"
-    }
-  }, null, 2);
-};
-
 const WebPreview: React.FC<WebPreviewProps> = ({ files, theme }) => {
-  const [key, setKey] = React.useState(0);
-  const [error, setError] = React.useState<string | null>(null);
+  // UI State
   const [activeView, setActiveView] = React.useState<'preview' | 'code' | 'backend'>('preview');
   const [deviceMode, setDeviceMode] = React.useState<'desktop' | 'mobile'>('desktop');
-  const [isLoading, setIsLoading] = React.useState(true);
-
-  // DevTools State
   const [showDevTools, setShowDevTools] = React.useState(true);
   const [activeTab, setActiveTab] = React.useState<'console' | 'network'>('console');
+  
+  // Data State
+  const [key, setKey] = React.useState(0);
   const [logs, setLogs] = React.useState<ConsoleLog[]>([]);
   const [networkRequests, setNetworkRequests] = React.useState<NetworkRequest[]>([]);
+  const [backendEndpoints, setBackendEndpoints] = React.useState<BackendEndpoint[]>([]);
+  const [debouncedFiles, setDebouncedFiles] = React.useState<ProjectFile[]>([]);
+  const [isDebouncing, setIsDebouncing] = React.useState(false);
+  const [runtimeError, setRuntimeError] = React.useState<string | null>(null);
 
-  // 1. Safe File Filtering & Memoization
-  // We use JSON.stringify to ensure deep equality check, preventing loops if parent passes new array ref
-  const safeFiles = React.useMemo(() => {
-    return (files || []).filter(file => file && file.name && file.content !== undefined);
-  }, [JSON.stringify(files.map(f => ({ name: f.name, content: f.content, language: f.language })))]);
+  // 1. Debounce Files to prevent Infinite Loops and flashing
+  React.useEffect(() => {
+    setIsDebouncing(true);
+    const handler = setTimeout(() => {
+      setDebouncedFiles(files || []);
+      setIsDebouncing(false);
+    }, 1000); // Wait 1 second after typing stops before recompiling
 
-  // 2. Detect Backend Endpoints (Memoized)
-  const backendEndpoints = React.useMemo(() => {
+    return () => clearTimeout(handler);
+  }, [files]);
+
+  // 2. Extract Backend Endpoints (Memoized)
+  React.useEffect(() => {
+    if (isDebouncing) return;
+
     const endpoints: BackendEndpoint[] = [];
-    const backendFiles = safeFiles.filter(f => 
+    const backendFiles = debouncedFiles.filter(f => 
       f.name.match(/server|api|route|controller/i) || 
       (f.content && f.content.match(/app\.(get|post|put|delete)/))
     );
@@ -84,15 +77,15 @@ const WebPreview: React.FC<WebPreviewProps> = ({ files, theme }) => {
         endpoints.push({
           method: match[1].toUpperCase(),
           path: match[2],
-          handler: `Route defined in ${file.name}`,
-          response: { success: true, message: 'Mock Backend Response' }
+          handler: `Route in ${file.name}`,
+          response: { success: true, message: 'Mock Response' }
         });
       }
     });
-    return endpoints;
-  }, [safeFiles]);
+    setBackendEndpoints(endpoints);
+  }, [debouncedFiles, isDebouncing]);
 
-  // 3. Communication Handler
+  // 3. Handle Messages from Iframe
   React.useEffect(() => {
     const handleMessage = (event: MessageEvent) => {
       const data = event.data;
@@ -113,8 +106,7 @@ const WebPreview: React.FC<WebPreviewProps> = ({ files, theme }) => {
           timestamp: new Date().toLocaleTimeString()
         }]);
       } else if (data.type === 'error') {
-        // Only set error if it's new to prevent flicker
-        setError(prev => prev === data.message ? prev : data.message);
+        setRuntimeError(data.message);
       }
     };
 
@@ -122,57 +114,54 @@ const WebPreview: React.FC<WebPreviewProps> = ({ files, theme }) => {
     return () => window.removeEventListener('message', handleMessage);
   }, []);
 
-  // 4. Generate Mock Backend Script
-  const generateBackendScript = (endpoints: BackendEndpoint[]) => `
+  // 4. Generate the Mock Backend Script
+  const getBackendScript = () => `
     <script>
       (function() {
-        const DB_KEY = 'mock_db_store';
+        // Simple Persistence
+        const DB_KEY = 'mock_db';
         const getDb = () => { try { return JSON.parse(sessionStorage.getItem(DB_KEY) || '{}'); } catch { return {}; } };
-        const saveDb = (data) => sessionStorage.setItem(DB_KEY, JSON.stringify(data));
+        const saveDb = (d) => sessionStorage.setItem(DB_KEY, JSON.stringify(d));
         
         window.mockBackend = {
-          endpoints: ${JSON.stringify(endpoints)},
+          endpoints: ${JSON.stringify(backendEndpoints)},
           handle: async (method, url, body) => {
             const db = getDb();
-            const endpoint = window.mockBackend.endpoints.find(ep => url.includes(ep.path) && ep.method === method);
+            const ep = window.mockBackend.endpoints.find(e => url.includes(e.path) && e.method === method);
             
-            await new Promise(r => setTimeout(r, 200 + Math.random() * 300)); // Simulate latency
+            await new Promise(r => setTimeout(r, 300)); // Latency
             
-            if (endpoint) {
-              if (method === 'POST') {
-                const collection = endpoint.path.split('/').pop() || 'items';
-                if (!db[collection]) db[collection] = [];
-                const newItem = { id: Date.now(), ...(body ? JSON.parse(body) : {}) };
-                db[collection].push(newItem);
-                saveDb(db);
-                return { status: 201, data: newItem };
-              } 
-              if (method === 'GET') {
-                const collection = endpoint.path.split('/').pop() || 'items';
-                return { status: 200, data: db[collection] || endpoint.response || { message: 'Success' } };
+            if(ep) {
+              if(method === 'POST') {
+                 const col = ep.path.split('/').pop() || 'data';
+                 if(!db[col]) db[col] = [];
+                 const item = { id: Date.now(), ...(body ? JSON.parse(body) : {}) };
+                 db[col].push(item);
+                 saveDb(db);
+                 return { status: 201, data: item };
               }
-              return { status: 200, data: endpoint.response || { success: true } };
+              if(method === 'GET') {
+                 const col = ep.path.split('/').pop() || 'data';
+                 return { status: 200, data: db[col] || ep.response || [] };
+              }
+              return { status: 200, data: ep.response };
             }
-            return { status: 404, data: { error: 'Not Found' } };
+            return { status: 404, data: { error: 'Not found' } };
           }
         };
 
         const originalFetch = window.fetch;
         window.fetch = async (url, options = {}) => {
-          const method = (options.method || 'GET').toUpperCase();
-          // Intercept local API calls
-          if (url.startsWith('/') || url.includes('localhost') || url.includes('api')) {
-             const startTime = performance.now();
+          if(url.startsWith('/') || url.includes('localhost') || url.includes('api')) {
+             const start = performance.now();
+             const method = (options.method || 'GET').toUpperCase();
              try {
-               const res = await window.mockBackend.handle(method, url, options.body);
-               window.parent.postMessage({
-                  type: 'network', method, url, status: res.status, duration: Math.round(performance.now() - startTime)
-               }, '*');
-               return new Response(JSON.stringify(res.data), { status: res.status, headers: { 'Content-Type': 'application/json' } });
-             } catch(e) {
-               console.error('Backend Error', e);
-               return new Response(JSON.stringify({error: 'Server Error'}), { status: 500 });
-             }
+                const res = await window.mockBackend.handle(method, url, options.body);
+                window.parent.postMessage({
+                  type: 'network', method, url, status: res.status, duration: Math.round(performance.now() - start)
+                }, '*');
+                return new Response(JSON.stringify(res.data), { status: res.status, headers: {'Content-Type': 'application/json'} });
+             } catch(e) { return originalFetch(url, options); }
           }
           return originalFetch(url, options);
         };
@@ -180,164 +169,199 @@ const WebPreview: React.FC<WebPreviewProps> = ({ files, theme }) => {
     </script>
   `;
 
-  // 5. Generate Source Document (Memoized to prevent reload loops)
-  const srcDoc = React.useMemo(() => {
-    try {
-      const htmlFile = safeFiles.find(f => f.name.endsWith('.html'))?.content || '<div id="root"></div>';
-      const cssContent = safeFiles.filter(f => f.name.endsWith('.css')).map(f => f.content).join('\n');
-      const jsFiles = safeFiles.filter(f => f.name.match(/\.(js|jsx|ts|tsx)$/) && !f.name.match(/server|api/));
+  // 5. Generate Content (The Core Logic)
+  const getSrcDoc = React.useCallback(() => {
+    if (debouncedFiles.length === 0) return '';
 
-      const scripts = jsFiles.map(f => {
-        let content = f.content || '';
-        const isReact = content.includes('React') || f.name.endsWith('jsx') || f.name.endsWith('tsx');
-        
-        // Auto-inject React import if missing for JSX files
-        if (isReact && !content.includes('import React')) {
-          content = `import React from 'react';\n${content}`;
-        }
+    const htmlFile = debouncedFiles.find(f => f.name.endsWith('.html'))?.content || '<div id="root"></div>';
+    const cssContent = debouncedFiles.filter(f => f.name.endsWith('.css')).map(f => f.content).join('\n');
+    
+    // We filter out server files so they don't crash the browser
+    const jsFiles = debouncedFiles.filter(f => 
+      f.name.match(/\.(js|jsx|ts|tsx)$/) && 
+      !f.name.match(/server|api|route/i)
+    );
 
-        return `
-          <script type="text/babel" data-type="module" data-presets="react,env">
-            ${content}
-          </script>
-        `;
-      }).join('\n');
-
+    const scripts = jsFiles.map(f => {
+      let content = f.content || '';
+      
+      // 1. Remove imports (We are using Global UMD React)
+      // This is a simple regex to strip standard imports so Babel doesn't choke on "require"
+      content = content.replace(/import\s+.*from\s+['"].*['"];?/g, '// import removed for preview');
+      content = content.replace(/export\s+default/g, '// export default');
+      
       return `
-        <!DOCTYPE html>
-        <html lang="en">
-        <head>
-          <meta charset="UTF-8" />
-          <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-          <script src="https://cdn.tailwindcss.com"></script>
-          
-          <!-- Import Map for Modules -->
-          <script type="importmap">
-            ${generateImportMap()}
-          </script>
-
-          <!-- Babel for Runtime Compilation -->
-          <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
-
-          <style>
-            ${cssContent}
-            body { font-family: -apple-system, sans-serif; margin: 0; padding: 0; background: #fff; }
-            #root { padding: 20px; }
-          </style>
-
-          <script>
-            // Console Bridge
-            ['log', 'error', 'warn', 'info'].forEach(method => {
-              const original = console[method];
-              console[method] = (...args) => {
-                original.apply(console, args);
-                window.parent.postMessage({ 
-                  type: 'console', 
-                  level: method, 
-                  args: args.map(a => typeof a === 'object' ? JSON.stringify(a) : String(a)) 
-                }, '*');
-              };
-            });
-            
-            window.onerror = (msg) => window.parent.postMessage({ type: 'error', message: msg }, '*');
-          </script>
-          ${generateBackendScript(backendEndpoints)}
-        </head>
-        <body>
-          ${htmlFile}
-          ${scripts}
-          <script>
-             // Final check to see if React mounted, if not, help out
-             setTimeout(() => {
-                if (!document.getElementById('root').innerHTML && typeof React !== 'undefined') {
-                   console.log('ℹ️ No React root rendered. Ensure you called ReactDOM.createRoot().render()');
-                }
-             }, 1000);
-          </script>
-        </body>
-        </html>
+        <script type="text/babel" data-presets="env,react,typescript">
+          try {
+            ${content}
+          } catch(err) {
+            console.error('Error in ${f.name}:', err);
+            window.parent.postMessage({ type: 'error', message: '${f.name}: ' + err.message }, '*');
+          }
+        </script>
       `;
-    } catch (e: any) {
-      return `<html><body><h3 style="color:red">Build Error</h3><p>${e.message}</p></body></html>`;
-    }
-  }, [safeFiles, backendEndpoints]); // Dependency safeFiles is deep-compared now
+    }).join('\n');
 
+    return `
+      <!DOCTYPE html>
+      <html>
+      <head>
+        <meta charset="UTF-8" />
+        <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+        
+        <!-- 1. Tailwind -->
+        <script src="https://cdn.tailwindcss.com"></script>
+        
+        <!-- 2. React & ReactDOM (UMD - Stable Globals) -->
+        <script crossorigin src="https://unpkg.com/react@18/umd/react.development.js"></script>
+        <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.development.js"></script>
+        
+        <!-- 3. Babel Standalone (With TypeScript Support) -->
+        <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+        
+        <!-- 4. Styles -->
+        <style>
+          ${cssContent}
+          body { background-color: white; color: black; }
+          .preview-error { color: red; padding: 20px; background: #ffebeb; border: 1px solid red; }
+        </style>
+
+        <!-- 5. Console Bridge & Mock Backend -->
+        <script>
+          window.process = { env: { NODE_ENV: 'development' } }; // Fix for some libs
+          
+          // Console Override
+          const sendLog = (level, args) => {
+             const msg = args.map(a => typeof a === 'object' ? JSON.stringify(a) : String(a));
+             window.parent.postMessage({ type: 'console', level, args: msg }, '*');
+          };
+          ['log', 'error', 'warn', 'info'].forEach(m => {
+             const old = console[m];
+             console[m] = (...args) => { old.apply(console, args); sendLog(m, args); };
+          });
+          window.onerror = (msg) => sendLog('error', [msg]);
+        </script>
+        ${getBackendScript()}
+      </head>
+      <body>
+        ${htmlFile}
+        
+        <!-- 6. User Scripts -->
+        ${scripts}
+
+        <!-- 7. Auto-Mount Helper -->
+        <script type="text/babel" data-presets="env,react">
+          setTimeout(() => {
+            // Check if user mounted something. If not, and there is an App component, mount it.
+            const root = document.getElementById('root');
+            if (root && root.innerHTML.trim() === '' && typeof App !== 'undefined') {
+               console.log('🚀 Auto-mounting App component...');
+               const rootInstance = ReactDOM.createRoot(root);
+               rootInstance.render(<App />);
+            }
+          }, 500);
+        </script>
+      </body>
+      </html>
+    `;
+  }, [debouncedFiles, backendEndpoints]);
+
+  // Handle manual refresh
   const handleRefresh = () => {
     setLogs([]);
     setNetworkRequests([]);
-    setError(null);
-    setIsLoading(true);
+    setRuntimeError(null);
     setKey(prev => prev + 1);
   };
 
   return (
     <div className="flex flex-col h-full w-full bg-gray-100 border border-gray-300 rounded-lg overflow-hidden font-sans">
+      
       {/* --- Toolbar --- */}
       <div className={`flex items-center justify-between px-3 py-2 border-b bg-white`}>
         <div className="flex items-center gap-2">
+          {/* Address Bar */}
           <div className="flex items-center bg-gray-100 rounded-md px-3 py-1.5 w-64 border border-gray-200">
             <Globe className="w-3 h-3 text-gray-500 mr-2" />
             <span className="text-xs text-gray-600 truncate">localhost:3000</span>
           </div>
+          
           <div className="h-4 w-px bg-gray-300 mx-2" />
+          
+          {/* Device Toggles */}
           <div className="flex bg-gray-100 rounded-md p-0.5">
-            <button onClick={() => setDeviceMode('desktop')} className={`p-1.5 rounded ${deviceMode === 'desktop' ? 'bg-white shadow-sm text-blue-600' : 'text-gray-500'}`}><Monitor className="w-3.5 h-3.5" /></button>
-            <button onClick={() => setDeviceMode('mobile')} className={`p-1.5 rounded ${deviceMode === 'mobile' ? 'bg-white shadow-sm text-blue-600' : 'text-gray-500'}`}><Smartphone className="w-3.5 h-3.5" /></button>
+            <button onClick={() => setDeviceMode('desktop')} className={`p-1.5 rounded ${deviceMode === 'desktop' ? 'bg-white shadow-sm text-blue-600' : 'text-gray-500'}`}>
+              <Monitor className="w-3.5 h-3.5" />
+            </button>
+            <button onClick={() => setDeviceMode('mobile')} className={`p-1.5 rounded ${deviceMode === 'mobile' ? 'bg-white shadow-sm text-blue-600' : 'text-gray-500'}`}>
+              <Smartphone className="w-3.5 h-3.5" />
+            </button>
           </div>
         </div>
 
         <div className="flex items-center gap-2">
-          <div className="flex bg-gray-100 rounded-lg p-0.5">
+           {isDebouncing && <span className="text-xs text-blue-500 animate-pulse">Compiling...</span>}
+           <div className="flex bg-gray-100 rounded-lg p-0.5">
             <button onClick={() => setActiveView('preview')} className={`px-3 py-1 text-xs font-medium rounded-md ${activeView === 'preview' ? 'bg-white shadow text-gray-800' : 'text-gray-500'}`}>Preview</button>
             {backendEndpoints.length > 0 && (
               <button onClick={() => setActiveView('backend')} className={`px-3 py-1 text-xs font-medium rounded-md ${activeView === 'backend' ? 'bg-white shadow text-gray-800' : 'text-gray-500'}`}>APIs ({backendEndpoints.length})</button>
             )}
             <button onClick={() => setActiveView('code')} className={`px-3 py-1 text-xs font-medium rounded-md ${activeView === 'code' ? 'bg-white shadow text-gray-800' : 'text-gray-500'}`}>Source</button>
           </div>
-          <button onClick={handleRefresh} className="p-1.5 rounded-md hover:bg-gray-100 text-gray-600"><RefreshCw className={`w-4 h-4 ${isLoading ? 'animate-spin' : ''}`} /></button>
+          <button onClick={handleRefresh} className="p-1.5 rounded-md hover:bg-gray-100 text-gray-600">
+            <RefreshCw className="w-4 h-4" />
+          </button>
         </div>
       </div>
 
-      {/* --- Main Area --- */}
+      {/* --- Main Content --- */}
       <div className="flex-grow relative bg-gray-200 overflow-hidden flex flex-col items-center">
         {activeView === 'preview' && (
           <div className={`transition-all duration-300 relative bg-white shadow-xl my-4 ${deviceMode === 'mobile' ? 'w-[375px] h-[667px] rounded-3xl border-8 border-gray-800' : 'w-full h-full'}`}>
-            {error && (
+            
+            {/* Error Overlay */}
+            {(runtimeError) && (
               <div className="absolute top-4 left-4 right-4 z-50 bg-red-50 text-red-600 p-3 rounded-md border border-red-200 text-xs flex gap-2 shadow-lg">
-                <AlertCircle className="w-4 h-4 mt-0.5" />
-                <div><strong>Runtime Error:</strong> {error}</div>
+                <AlertCircle className="w-4 h-4 mt-0.5 shrink-0" />
+                <div className="overflow-auto max-h-32">
+                  <strong>Runtime Error:</strong> {runtimeError}
+                </div>
+                <button onClick={() => setRuntimeError(null)} className="ml-auto text-red-400 hover:text-red-700"><XCircle className="w-4 h-4"/></button>
               </div>
             )}
+
             <iframe
               key={key}
-              srcDoc={srcDoc}
+              srcDoc={getSrcDoc()}
               className="w-full h-full border-none bg-white"
               sandbox="allow-scripts allow-modals allow-forms allow-same-origin"
-              onLoad={() => setIsLoading(false)}
             />
           </div>
         )}
 
+        {/* Backend View */}
         {activeView === 'backend' && (
           <div className="w-full h-full bg-white p-6 overflow-auto">
-            <h2 className="text-lg font-bold mb-4 flex items-center gap-2"><Server className="w-5 h-5" /> Detected Endpoints</h2>
-            <div className="grid gap-3 max-w-3xl">
+            <h2 className="text-lg font-bold mb-4 flex items-center gap-2"><Server className="w-5 h-5 text-blue-500" /> Detected Endpoints</h2>
+             <div className="grid gap-3 max-w-3xl">
               {backendEndpoints.map((ep, i) => (
-                <div key={i} className="border p-3 rounded flex items-center gap-3">
-                  <span className={`px-2 py-1 text-xs font-bold text-white rounded ${ep.method === 'GET' ? 'bg-green-500' : 'bg-blue-500'}`}>{ep.method}</span>
-                  <code className="bg-gray-100 px-2 py-1 rounded text-sm">{ep.path}</code>
+                <div key={i} className="border p-3 rounded flex items-center gap-3 bg-gray-50">
+                  <span className={`px-2 py-1 text-xs font-bold text-white rounded ${ep.method === 'GET' ? 'bg-green-500' : ep.method === 'POST' ? 'bg-blue-500' : 'bg-red-500'}`}>{ep.method}</span>
+                  <code className="bg-white border px-2 py-1 rounded text-sm font-mono">{ep.path}</code>
                 </div>
               ))}
+              {backendEndpoints.length === 0 && <p className="text-gray-400">No endpoints detected.</p>}
             </div>
           </div>
         )}
 
+        {/* Code View */}
         {activeView === 'code' && (
-          <div className="w-full h-full bg-[#1e1e1e] p-0 overflow-auto">
-            {safeFiles.map((f, i) => (
+           <div className="w-full h-full bg-[#1e1e1e] p-0 overflow-auto">
+            {debouncedFiles.map((f, i) => (
               <div key={i} className="border-b border-gray-700">
                 <div className="bg-[#2d2d2d] px-4 py-2 text-xs text-gray-300 flex items-center gap-2"><FileText className="w-3 h-3" /> {f.name}</div>
-                <pre className="p-4 text-xs font-mono text-blue-300 overflow-x-auto">{f.content}</pre>
+                <pre className="p-4 text-xs font-mono text-blue-300 overflow-x-auto whitespace-pre">{f.content}</pre>
               </div>
             ))}
           </div>
@@ -362,10 +386,11 @@ const WebPreview: React.FC<WebPreviewProps> = ({ files, theme }) => {
           <div className="flex-grow overflow-auto bg-white font-mono text-xs">
             {activeTab === 'console' ? (
               <div className="p-2 space-y-1">
+                {logs.length === 0 && <div className="text-gray-400 italic p-2">Console empty</div>}
                 {logs.map((log, i) => (
                   <div key={i} className={`flex gap-2 py-1 border-b border-gray-50 ${log.type === 'error' ? 'text-red-600 bg-red-50' : 'text-gray-700'}`}>
                     <span className="text-gray-400 w-16 text-right shrink-0">{log.timestamp}</span>
-                    <span className="whitespace-pre-wrap">{log.message}</span>
+                    <span className="whitespace-pre-wrap break-all">{log.message}</span>
                   </div>
                 ))}
               </div>
@@ -377,10 +402,11 @@ const WebPreview: React.FC<WebPreviewProps> = ({ files, theme }) => {
                     <tr key={i} className="border-b hover:bg-gray-50">
                       <td className="p-2">{req.status < 400 ? <span className="text-green-500 flex gap-1 items-center"><CheckCircle className="w-3 h-3"/> {req.status}</span> : <span className="text-red-500 flex gap-1 items-center"><XCircle className="w-3 h-3"/> {req.status}</span>}</td>
                       <td className="p-2 font-bold">{req.method}</td>
-                      <td className="p-2">{req.url}</td>
+                      <td className="p-2 break-all">{req.url}</td>
                       <td className="p-2 text-gray-500">{req.duration}ms</td>
                     </tr>
                   ))}
+                  {networkRequests.length === 0 && <tr><td colSpan={4} className="p-4 text-gray-400 italic text-center">No network requests</td></tr>}
                 </tbody>
               </table>
             )}
