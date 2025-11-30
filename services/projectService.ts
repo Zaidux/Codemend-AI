@@ -1,5 +1,6 @@
 import { Project, ProjectFile, ProjectSummary, FileChange, GitStatus } from '../types';
 import { contextService } from './contextService';
+import { extractRepoName } from './githubService';
 
 export class ProjectService {
   private static instance: ProjectService;
@@ -11,8 +12,8 @@ export class ProjectService {
     return ProjectService.instance;
   }
 
-  // Create a new project
-  async createProject(name: string, files: ProjectFile[] = []): Promise<Project> {
+  // --- UPDATED: createProject now accepts optional metadata/githubUrl ---
+  async createProject(name: string, files: ProjectFile[] = [], githubUrl?: string): Promise<Project> {
     const project: Project = {
       id: this.generateUUID(),
       name: name.trim(),
@@ -20,16 +21,37 @@ export class ProjectService {
       activeFileId: files[0]?.id || '',
       lastModified: Date.now(),
       createdAt: Date.now(),
+      githubUrl: githubUrl, // specific field if your type supports it
       metadata: {
         description: '',
         tags: [],
-        version: '1.0.0'
+        version: '1.0.0',
+        githubUrl: githubUrl // store in metadata as fallback
       }
     };
 
     // Save to localStorage
     this.saveProjectToStorage(project);
     return project;
+  }
+
+  // --- NEW: Helper to find existing project by Repo Name or URL ---
+  async findProjectByRepo(repoInput: string): Promise<Project | null> {
+    const cleanName = extractRepoName(repoInput).toLowerCase();
+    if (!cleanName) return null;
+
+    const projects = this.getAllProjectsFromStorage();
+    
+    return projects.find(p => {
+      // 1. Check direct name match (e.g., "facebook/react")
+      if (p.name.toLowerCase() === cleanName) return true;
+
+      // 2. Check metadata URL if it exists
+      const pRepo = p.metadata?.githubUrl ? extractRepoName(p.metadata.githubUrl) : '';
+      if (pRepo.toLowerCase() === cleanName) return true;
+
+      return false;
+    }) || null;
   }
 
   // Load project from storage
@@ -135,7 +157,7 @@ export class ProjectService {
   async restoreProject(projectId: string): Promise<Project> {
     const archives = this.getArchivedProjectsFromStorage();
     const archivedProject = archives.find(p => p.id === projectId);
-    
+
     if (!archivedProject) {
       throw new Error(`Archived project ${projectId} not found`);
     }
@@ -181,7 +203,7 @@ export class ProjectService {
     // Check for modified files
     for (const [name, externalFile] of externalFilesMap) {
       const currentFile = currentFilesMap.get(name);
-      
+
       if (currentFile) {
         // File exists in both - check if content changed
         if (currentFile.content !== externalFile.content) {
@@ -277,7 +299,7 @@ export class ProjectService {
   async importProject(file: File): Promise<Project> {
     return new Promise((resolve, reject) => {
       const reader = new FileReader();
-      
+
       reader.onload = (e) => {
         try {
           const projectData = JSON.parse(e.target?.result as string);
@@ -303,7 +325,7 @@ export class ProjectService {
   private saveProjectToStorage(project: Project): void {
     const projects = this.getAllProjectsFromStorage();
     const existingIndex = projects.findIndex(p => p.id === project.id);
-    
+
     if (existingIndex >= 0) {
       projects[existingIndex] = project;
     } else {
