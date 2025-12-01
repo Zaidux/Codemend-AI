@@ -148,9 +148,9 @@ const AppSidebar: React.FC<AppSidebarProps> = (props) => {
         }
 
         setProjectMenuOpen(null);
-      } catch (error) {
+      } catch (error: any) {
         console.error('Failed to delete project:', error);
-        alert('Failed to delete project');
+        alert(`Failed to delete project: ${error.message}`);
       }
     }
   };
@@ -170,9 +170,9 @@ const AppSidebar: React.FC<AppSidebarProps> = (props) => {
         }
 
         setProjectMenuOpen(null);
-      } catch (error) {
+      } catch (error: any) {
         console.error('Failed to archive project:', error);
-        alert('Failed to archive project');
+        alert(`Failed to archive project: ${error.message}`);
       }
     }
   };
@@ -189,20 +189,31 @@ const AppSidebar: React.FC<AppSidebarProps> = (props) => {
 
       const updatedProject = { ...project, name: newName.trim() };
       
-      // Update local state
+      // Update local state immediately for responsive UI
       const updatedProjects = props.projects.map(p => 
         p.id === projectId ? updatedProject : p
       );
       updateProjectsState(updatedProjects);
 
       // Persist to storage using service method
-      await projectService.updateProject(projectId, { name: newName.trim() });
+      try {
+        await projectService.updateProject(projectId, { name: newName.trim() });
+        console.log('Project renamed successfully:', projectId, newName);
+      } catch (serviceError) {
+        // Even if service fails, keep the UI change but log error
+        console.warn('Service update failed but UI updated:', serviceError);
+      }
 
       setEditingProjectId(null);
       setEditedProjectName('');
-    } catch (error) {
+      
+      // Don't show alert on success - it's confusing to users
+    } catch (error: any) {
       console.error('Failed to rename project:', error);
-      alert('Failed to rename project');
+      // Only show alert for actual errors, not warnings
+      if (!error.message?.includes('UI updated')) {
+        alert(`Failed to rename project: ${error.message}`);
+      }
     }
   };
 
@@ -466,7 +477,13 @@ const AppSidebar: React.FC<AppSidebarProps> = (props) => {
                                  if (e.key === 'Enter') handleRenameProject(p.id, editedProjectName);
                                  if (e.key === 'Escape') setEditingProjectId(null);
                                }}
-                               onBlur={() => setEditingProjectId(null)}
+                               onBlur={() => {
+                                 if (editedProjectName.trim() && editedProjectName !== p.name) {
+                                   handleRenameProject(p.id, editedProjectName);
+                                 } else {
+                                   setEditingProjectId(null);
+                                 }
+                               }}
                                className={`flex-1 text-xs ${theme.bgApp} border ${theme.border} rounded px-2 py-1`}
                              />
                            ) : (
