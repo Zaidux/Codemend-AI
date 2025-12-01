@@ -1,5 +1,6 @@
 import { Project, ProjectFile, CodeLanguage } from '../types';
 import JSZip from 'jszip';
+import { ProjectUtils } from './projectUtils';
 
 const GITHUB_API_BASE = 'https://api.github.com';
 
@@ -40,7 +41,7 @@ const getLanguageFromExt = (filename: string): CodeLanguage => {
 // Helper: Extract Repo Name from URL or String
 export const extractRepoName = (urlOrPath: string): string => {
     if (!urlOrPath) return '';
-    
+
     // Handle both "owner/repo" and full URL formats
     if (urlOrPath.includes('github.com/')) {
         const match = urlOrPath.match(/github\.com\/([^\/]+\/[^\/]+)/);
@@ -52,15 +53,43 @@ export const extractRepoName = (urlOrPath: string): string => {
     return urlOrPath.replace(/^\//, '').replace(/\/$/, '').replace(/\.git$/, '');
 };
 
-// Helper: Find duplicate project
-export const findDuplicateProject = (projects: Project[], repoUrl: string): Project | null => {
-    const repoName = extractRepoName(repoUrl);
-    
-    return projects.find(project => 
+// Enhanced: Find duplicate project with similarity checking
+export const findDuplicateProject = async (projects: Project[], repoInput: string, files?: ProjectFile[]): Promise<{project: Project | null, reason: 'exact' | 'similar' | 'none', similarity?: number}> => {
+    const repoName = extractRepoName(repoInput).toLowerCase();
+
+    // First try exact match
+    const exactMatch = projects.find(project => 
         project.name.toLowerCase() === repoName.toLowerCase() ||
-        project.githubUrl?.toLowerCase() === repoUrl.toLowerCase() ||
+        project.githubUrl?.toLowerCase() === repoInput.toLowerCase() ||
         (project.githubUrl && extractRepoName(project.githubUrl) === repoName)
-    ) || null;
+    );
+
+    if (exactMatch) {
+        return { project: exactMatch, reason: 'exact' };
+    }
+
+    // If we have files, check for similar projects
+    if (files && files.length > 0) {
+        const testProject: Project = {
+            id: 'temp',
+            name: 'test',
+            files: files,
+            activeFileId: files[0]?.id || '',
+            lastModified: Date.now(),
+            createdAt: Date.now()
+        };
+
+        // Find similar projects
+        for (const project of projects) {
+            const similarity = ProjectUtils.calculateProjectSimilarity(testProject, project);
+            if (similarity > 0.7) { // 70% similarity threshold
+                console.log(`Found similar project: ${project.name} (${Math.round(similarity * 100)}% similar)`);
+                return { project, reason: 'similar', similarity };
+            }
+        }
+    }
+
+    return { project: null, reason: 'none' };
 };
 
 // Parse GitHub URL or owner/repo format
@@ -180,7 +209,7 @@ const fetchViaContentsAPI = async (owner: string, repo: string, token?: string):
     return files;
 };
 
-const fetchViaZip = async (owner: string, repo: string, token?: string): Promise<{name: string, files: ProjectFile[]}> => {
+const fetchViaZip = async (owner: string, repo: string, token?: string): Promise<{name: string, files: ProjectFile[], structure?: any}> => {
     const headers: HeadersInit = {
         'User-Agent': 'CodeMend-AI',
         'Accept': 'application/vnd.github.v3+json'
@@ -235,9 +264,22 @@ const fetchViaZip = async (owner: string, repo: string, token?: string): Promise
 
     if (files.length === 0) throw new Error("No readable code files found.");
 
+    // Analyze project structure immediately
+    const structure = ProjectUtils.analyzeProjectStructure(files);
+    const issues = ProjectUtils.findPotentialIssues({ files });
+
+    console.log('📊 Repository Analysis:', {
+        name: `${owner}/${repo}`,
+        files: files.length,
+        architecture: structure.architecture,
+        dependencies: structure.dependencies.length,
+        issues: issues.length
+    });
+
     return {
         name: `${owner}/${repo}`,
-        files: files
+        files: files,
+        structure
     };
 };
 
@@ -271,15 +313,31 @@ const isTextFile = (filename: string): boolean => {
     return textExtensions.includes(ext);
 };
 
-// Main Export function - returns project data without ID for flexibility
-export const fetchRepoContents = async (input: string, token?: string): Promise<{name: string, files: ProjectFile[]}> => {
+// Enhanced Main Export function with project analysis
+export const fetchRepoContents = async (input: string, token?: string): Promise<{
+    name: string, 
+    files: ProjectFile[],
+    structure?: any,
+    stats?: any,
+    issues?: string[]
+}> => {
     const { owner, repo } = parseGitHubUrl(input);
 
     try {
         console.log(`🚀 Fetching repository: ${owner}/${repo}`);
 
         try {
-            return await fetchViaZip(owner, repo, token);
+            const result = await fetchViaZip(owner, repo, token);
+            const stats = ProjectUtils.generateProjectStats({ files: result.files });
+            const issues = ProjectUtils.findPotentialIssues({ files: result.files });
+            
+            return {
+                name: result.name,
+                files: result.files,
+                structure: result.structure,
+                stats,
+                issues
+            };
         } catch (zipError) {
             console.warn('ZIP method failed, trying Contents API...', zipError);
             const files = await fetchViaContentsAPI(owner, repo, token);
@@ -288,9 +346,16 @@ export const fetchRepoContents = async (input: string, token?: string): Promise<
                 throw new Error('No readable code files found. Repository might be private or empty.');
             }
 
+            const structure = ProjectUtils.analyzeProjectStructure(files);
+            const stats = ProjectUtils.generateProjectStats({ files });
+            const issues = ProjectUtils.findPotentialIssues({ files });
+
             return {
                 name: `${owner}/${repo}`,
-                files: files
+                files: files,
+                structure,
+                stats,
+                issues
             };
         }
 
@@ -306,24 +371,48 @@ export const fetchRepoContents = async (input: string, token?: string): Promise<
     }
 };
 
-// NEW: Function to update existing project with latest GitHub contents
-export const updateExistingProject = async (project: Project, token?: string): Promise<Project> => {
+// Enhanced: Update existing project with conflict detection
+export const updateExistingProject = async (project: Project, token?: string): Promise<{
+    project: Project,
+    changes: FileChange[],
+    conflicts: FileChange[]
+}> => {
     if (!project.githubUrl) {
         throw new Error('Project does not have a GitHub URL to update from');
     }
 
     try {
         console.log(`🔄 Updating project: ${project.name}`);
+        const repoData = await fetchRepoContents(project.githubUrl, token);
+
+        // Detect changes and conflicts
+        const changes = await projectService.detectChanges(project, repoData.files);
+        const conflicts = detectMergeConflicts(project, { ...project, files: repoData.files });
+
+        if (conflicts.length > 0) {
+            console.warn(`⚠️ Found ${conflicts.length} merge conflicts`);
+        }
+
+        // Merge the projects
+        const mergedProject = mergeProjects(project, { ...project, files: repoData.files });
         
-        const { name, files } = await fetchRepoContents(project.githubUrl, token);
-        
-        // Preserve the original project ID and merge with new data
+        // Update with new data
+        const updatedProject = {
+            ...mergedProject,
+            name: repoData.name,
+            lastModified: Date.now(),
+            metadata: {
+                ...mergedProject.metadata,
+                lastUpdate: Date.now(),
+                updateChanges: changes.length,
+                updateConflicts: conflicts.length
+            }
+        };
+
         return {
-            ...project,
-            name: name,
-            files: files,
-            activeFileId: files[0]?.id || project.activeFileId,
-            lastModified: Date.now()
+            project: updatedProject,
+            changes,
+            conflicts
         };
     } catch (error) {
         console.error('Failed to update project:', error);
@@ -331,48 +420,111 @@ export const updateExistingProject = async (project: Project, token?: string): P
     }
 };
 
-// NEW: Enhanced GitHub import handler with duplication check
+// Enhanced GitHub import handler with intelligent duplicate detection
 export const handleGitHubImport = async (
     repoInput: string,
     existingProjects: Project[],
     token?: string,
-    onUpdate?: (project: Project) => void,
-    onCreate?: (project: Project) => void
-): Promise<{action: 'created' | 'updated' | 'cancelled', project?: Project}> => {
+    onUpdate?: (project: Project, changes?: FileChange[], conflicts?: FileChange[]) => void,
+    onCreate?: (project: Project, analysis?: any) => void
+): Promise<{
+    action: 'created' | 'updated' | 'cancelled' | 'similar_found',
+    project?: Project,
+    analysis?: any,
+    changes?: FileChange[],
+    conflicts?: FileChange[],
+    similarProjects?: {project: Project, similarity: number}[]
+}> => {
     if (!repoInput.trim()) {
         throw new Error('Please enter a GitHub repository URL or owner/repo');
     }
 
-    const repoName = extractRepoName(repoInput);
-    const existingProject = findDuplicateProject(existingProjects, repoInput);
+    try {
+        // First fetch the repository to analyze it
+        console.log('📥 Fetching repository for analysis...');
+        const repoData = await fetchRepoContents(repoInput, token);
 
-    if (existingProject) {
-        // Ask user if they want to update the existing project
-        const shouldUpdate = window.confirm(
-            `Project "${existingProject.name}" already exists. Do you want to update it with the latest changes from GitHub?`
-        );
-        
-        if (shouldUpdate) {
-            const updatedProject = await updateExistingProject(existingProject, token);
-            onUpdate?.(updatedProject);
-            return { action: 'updated', project: updatedProject };
-        } else {
-            return { action: 'cancelled' };
+        // Check for duplicates with similarity analysis
+        const duplicateResult = await findDuplicateProject(existingProjects, repoInput, repoData.files);
+
+        if (duplicateResult.project) {
+            if (duplicateResult.reason === 'similar' && duplicateResult.similarity && duplicateResult.similarity < 0.9) {
+                // Similar but not exact match - ask user
+                const shouldProceed = window.confirm(
+                    `Found a similar project "${duplicateResult.project.name}" (${Math.round(duplicateResult.similarity * 100)}% similar).\n\n` +
+                    `Do you want to create a new project anyway?\n\n` +
+                    `Click "OK" to create new project\n` +
+                    `Click "Cancel" to go back`
+                );
+
+                if (!shouldProceed) {
+                    return { 
+                        action: 'similar_found',
+                        similarProjects: duplicateResult.project ? [{project: duplicateResult.project, similarity: duplicateResult.similarity || 0}] : []
+                    };
+                }
+                // Continue to create new project
+            } else {
+                // Exact match or very similar - ask to update
+                const shouldUpdate = window.confirm(
+                    `Project "${duplicateResult.project.name}" already exists.\n\n` +
+                    `Do you want to update it with the latest changes from GitHub?\n\n` +
+                    `Click "OK" to update existing project\n` +
+                    `Click "Cancel" to go back`
+                );
+
+                if (shouldUpdate) {
+                    const updateResult = await updateExistingProject(duplicateResult.project, token);
+                    onUpdate?.(updateResult.project, updateResult.changes, updateResult.conflicts);
+                    return { 
+                        action: 'updated', 
+                        project: updateResult.project,
+                        changes: updateResult.changes,
+                        conflicts: updateResult.conflicts
+                    };
+                } else {
+                    return { action: 'cancelled' };
+                }
+            }
         }
-    } else {
-        // Create new project
-        const { name, files } = await fetchRepoContents(repoInput, token);
-        
+
+        // Create new project with analysis data
         const newProject: Project = {
             id: crypto.randomUUID(),
-            name: name,
-            files: files,
-            activeFileId: files[0]?.id || '',
+            name: repoData.name,
+            files: repoData.files,
+            activeFileId: repoData.files[0]?.id || '',
             githubUrl: repoInput,
-            lastModified: Date.now()
+            lastModified: Date.now(),
+            createdAt: Date.now(),
+            metadata: {
+                description: '',
+                tags: [],
+                version: '1.0.0',
+                githubUrl: repoInput,
+                structure: repoData.structure,
+                stats: repoData.stats,
+                issues: repoData.issues,
+                lastAnalyzed: Date.now()
+            }
         };
-        
-        onCreate?.(newProject);
-        return { action: 'created', project: newProject };
+
+        const analysis = {
+            structure: repoData.structure,
+            stats: repoData.stats,
+            issues: repoData.issues,
+            recommendations: repoData.issues?.length ? ['Review the identified issues'] : []
+        };
+
+        onCreate?.(newProject, analysis);
+        return { 
+            action: 'created', 
+            project: newProject,
+            analysis
+        };
+
+    } catch (error: any) {
+        console.error('GitHub import failed:', error);
+        throw new Error(`Import failed: ${error.message}`);
     }
 };
