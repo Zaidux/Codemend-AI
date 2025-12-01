@@ -53,11 +53,28 @@ export class ProjectService {
     }) || null;
   }
 
-  // Load project from storage
-  async loadProject(projectId: string): Promise<Project | null> {
+  // Load project from storage - FIXED: Search both active and archived projects
+  async loadProject(projectId: string, includeArchived: boolean = true): Promise<Project | null> {
     try {
-      const projects = this.getAllProjectsFromStorage();
-      return projects.find(p => p.id === projectId) || null;
+      // First check active projects
+      const activeProjects = this.getAllProjectsFromStorage();
+      const activeProject = activeProjects.find(p => p.id === projectId);
+      
+      if (activeProject) {
+        return activeProject;
+      }
+      
+      // If not found and includeArchived is true, check archives
+      if (includeArchived) {
+        const archivedProjects = this.getArchivedProjectsFromStorage();
+        const archivedProject = archivedProjects.find(p => p.id === projectId);
+        
+        if (archivedProject) {
+          return archivedProject;
+        }
+      }
+      
+      return null;
     } catch (error) {
       console.error('Error loading project:', error);
       return null;
@@ -66,9 +83,9 @@ export class ProjectService {
 
   // NEW: Generic project update method
   async updateProject(projectId: string, updates: Partial<Project>): Promise<Project> {
-    const project = await this.loadProject(projectId);
+    const project = await this.loadProject(projectId, false); // Don't look in archives for updates
     if (!project) {
-      throw new Error(`Project ${projectId} not found`);
+      throw new Error(`Project ${projectId} not found in active projects`);
     }
 
     const updatedProject: Project = {
@@ -88,7 +105,7 @@ export class ProjectService {
 
   // Add or update a single file
   async updateFile(projectId: string, file: ProjectFile): Promise<Project> {
-    const project = await this.loadProject(projectId);
+    const project = await this.loadProject(projectId, false);
     if (!project) {
       throw new Error(`Project ${projectId} not found`);
     }
@@ -108,7 +125,7 @@ export class ProjectService {
 
   // Delete a file
   async deleteFile(projectId: string, fileId: string): Promise<Project> {
-    const project = await this.loadProject(projectId);
+    const project = await this.loadProject(projectId, false);
     if (!project) {
       throw new Error(`Project ${projectId} not found`);
     }
@@ -120,39 +137,56 @@ export class ProjectService {
   // Delete entire project
   async deleteProject(projectId: string): Promise<void> {
     try {
+      // Check if project exists in active projects
+      const project = await this.loadProject(projectId, false);
+      if (!project) {
+        throw new Error(`Project ${projectId} not found in active projects`);
+      }
+      
       const projects = this.getAllProjectsFromStorage();
       const updatedProjects = projects.filter(p => p.id !== projectId);
       localStorage.setItem(this.PROJECTS_STORAGE_KEY, JSON.stringify(updatedProjects));
     } catch (error) {
       console.error('Error deleting project:', error);
-      throw new Error(`Failed to delete project: ${error}`);
+      throw new Error(`Failed to delete project: ${error instanceof Error ? error.message : String(error)}`);
     }
   }
 
-  // Archive project
+  // Archive project - FIXED: Better error handling
   async archiveProject(projectId: string): Promise<void> {
-    const project = await this.loadProject(projectId);
-    if (!project) {
-      throw new Error(`Project ${projectId} not found`);
-    }
-
-    // Add archive metadata
-    const archivedProject = {
-      ...project,
-      metadata: {
-        ...project.metadata,
-        archived: true,
-        archivedAt: Date.now()
+    try {
+      const project = await this.loadProject(projectId, false);
+      if (!project) {
+        throw new Error(`Project ${projectId} not found in active projects`);
       }
-    };
 
-    // Save to archive storage
-    const archives = this.getArchivedProjectsFromStorage();
-    archives.push(archivedProject);
-    localStorage.setItem(this.ARCHIVES_STORAGE_KEY, JSON.stringify(archives));
+      console.log('Archiving project:', project.name, projectId);
 
-    // Remove from active projects
-    await this.deleteProject(projectId);
+      // Add archive metadata
+      const archivedProject = {
+        ...project,
+        metadata: {
+          ...project.metadata,
+          archived: true,
+          archivedAt: Date.now()
+        }
+      };
+
+      // Save to archive storage
+      const archives = this.getArchivedProjectsFromStorage();
+      archives.push(archivedProject);
+      localStorage.setItem(this.ARCHIVES_STORAGE_KEY, JSON.stringify(archives));
+
+      // Remove from active projects
+      const projects = this.getAllProjectsFromStorage();
+      const updatedProjects = projects.filter(p => p.id !== projectId);
+      localStorage.setItem(this.PROJECTS_STORAGE_KEY, JSON.stringify(updatedProjects));
+      
+      console.log('Project archived successfully');
+    } catch (error) {
+      console.error('Error in archiveProject:', error);
+      throw new Error(`Failed to archive project: ${error instanceof Error ? error.message : String(error)}`);
+    }
   }
 
   // Restore archived project
@@ -184,7 +218,7 @@ export class ProjectService {
     return restoredProject;
   }
 
-  // Get all projects
+  // Get all projects (active only)
   async getAllProjects(): Promise<Project[]> {
     return this.getAllProjectsFromStorage();
   }
@@ -241,7 +275,7 @@ export class ProjectService {
 
   // Apply changes to project
   async applyChanges(projectId: string, changes: FileChange[]): Promise<Project> {
-    const project = await this.loadProject(projectId);
+    const project = await this.loadProject(projectId, false);
     if (!project) {
       throw new Error(`Project ${projectId} not found`);
     }
@@ -271,7 +305,7 @@ export class ProjectService {
 
   // Get project summary
   async getProjectSummary(projectId: string): Promise<ProjectSummary> {
-    const project = await this.loadProject(projectId);
+    const project = await this.loadProject(projectId, true);
     if (!project) {
       throw new Error(`Project ${projectId} not found`);
     }
@@ -281,7 +315,7 @@ export class ProjectService {
 
   // Export project as ZIP
   async exportProject(projectId: string): Promise<Blob> {
-    const project = await this.loadProject(projectId);
+    const project = await this.loadProject(projectId, true);
     if (!project) {
       throw new Error(`Project ${projectId} not found`);
     }
