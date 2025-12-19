@@ -1,7 +1,7 @@
 import { Project, ProjectFile, ProjectSummary, FileChange, GitStatus } from '../types';
 import { contextService } from './contextService';
 import { extractRepoName } from './githubService';
-import { ProjectUtils, mergeProjects, detectMergeConflicts } from './projectUtils';
+import { ProjectUtils, mergeProjects, detectMergeConflicts } from '../utils/projectUtils';
 
 export class ProjectService {
   private static instance: ProjectService;
