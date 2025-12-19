@@ -12,6 +12,8 @@ import DiffViewer from './components/DiffViewer';
 import AppSidebar from './components/AppSidebar';
 import ProcessLog from './components/ProcessLog';
 import Terminal from './components/Terminal'; 
+import { ToolsManagementModal } from './components/ToolsManagementModal';
+import { GitTracker } from './components/GitTracker'; 
 
 import { THEMES, DEFAULT_LLM_CONFIG, DEFAULT_ROLES } from './constants';
 import { CodeLanguage, AppMode, ThemeType, Session, ChatMessage, ViewMode, ProjectFile, LLMConfig, Project, Attachment, AgentRole, KnowledgeEntry, TodoItem, FileDiff, ProjectSummary } from './types';
@@ -72,6 +74,8 @@ const App: React.FC = () => {
   const [isSidebarOpen, setIsSidebarOpen] = useState<boolean>(true);
   const [isEditorOpen, setIsEditorOpen] = useState<boolean>(false);
   const [showGithubInput, setShowGithubInput] = useState(false);
+  const [showToolsModal, setShowToolsModal] = useState(false);
+  const [showGitTracker, setShowGitTracker] = useState(false);
   const [repoInput, setRepoInput] = useState('');
   const [leftPanelTab, setLeftPanelTab] = useState<'code' | 'preview' | 'todos'>('code');
   const [activeTab, setActiveTab] = useState<'chats' | 'files' | 'knowledge'>('chats');
@@ -608,18 +612,21 @@ const App: React.FC = () => {
                            }
                          }} 
                          placeholder="Instructions..." 
-                         className={`w-full ${theme.bgApp} border ${theme.border} rounded-xl pl-12 px-4 py-3 pr-14 text-sm outline-none resize-none`} 
-                         rows={2} 
+                         className={`w-full ${theme.bgApp} border ${theme.border} rounded-xl pl-12 px-4 py-3 pr-16 text-sm outline-none resize-none`} 
+                         rows={3} 
+                         style={{minHeight: '80px'}}
                        />
                        {/* Photo and Microphone buttons for classic mode */}
-                       <div className="flex flex-col gap-1 absolute left-2 bottom-3 z-10">
+                       <div className="flex flex-col gap-1 absolute left-2 top-2 z-10">
                          <input type="file" ref={imageInputRef} onChange={handleImageUpload} accept="image/*" className="hidden" />
-                         <button onClick={() => imageInputRef.current?.click()} className={`${theme.textMuted} hover:text-white p-1.5 rounded-full hover:bg-white/10`}><ImageIcon className="w-4 h-4" /></button>
+                         <button onClick={() => imageInputRef.current?.click()} className={`${theme.textMuted} hover:text-white p-1.5 rounded-full hover:bg-white/10 transition-colors`} title="Upload image"><ImageIcon className="w-4 h-4" /></button>
                          <input type="file" ref={fileInputRef} onChange={handleFileUpload} accept=".txt,.js,.ts,.jsx,.tsx,.html,.css,.py,.java,.json" className="hidden" />
-                         <button onClick={() => fileInputRef.current?.click()} className={`${theme.textMuted} hover:text-white p-1.5 rounded-full hover:bg-white/10`}><Code2 className="w-4 h-4" /></button>
-                         <button onClick={toggleRecording} className={`${isRecording ? 'text-red-500 animate-pulse' : theme.textMuted} hover:text-white p-1.5 rounded-full hover:bg-white/10`}><Mic className="w-4 h-4" /></button>
+                         <button onClick={() => fileInputRef.current?.click()} className={`${theme.textMuted} hover:text-white p-1.5 rounded-full hover:bg-white/10 transition-colors`} title="Upload code file"><Code2 className="w-4 h-4" /></button>
+                         <button onClick={toggleRecording} className={`${isRecording ? 'text-red-500 animate-pulse' : theme.textMuted} hover:text-white p-1.5 rounded-full hover:bg-white/10 transition-colors`} title="Record audio"><Mic className="w-4 h-4" /></button>
+                         <button onClick={() => setShowToolsModal(true)} className={`${theme.textMuted} hover:text-blue-400 p-1.5 rounded-full hover:bg-blue-500/10 transition-colors`} title="Manage AI Tools"><Wrench className="w-4 h-4" /></button>
+                         <button onClick={() => setShowGitTracker(true)} className={`${theme.textMuted} hover:text-green-400 p-1.5 rounded-full hover:bg-green-500/10 transition-colors`} title="Git Changes"><GitCompare className="w-4 h-4" /></button>
                        </div>
-                       <button onClick={handleSendMessage} disabled={isLoading} className={`absolute right-2 bottom-2 p-2 rounded-lg ${isLoading ? 'bg-white/5 text-slate-500 cursor-not-allowed' : `${theme.button} text-white`}`}>
+                       <button onClick={handleSendMessage} disabled={isLoading} className={`absolute right-2 bottom-2 p-2.5 rounded-lg transition-all ${isLoading ? 'bg-white/5 text-slate-500 cursor-not-allowed' : `${theme.button} ${theme.buttonHover} text-white shadow-lg`}`}>
                          {isLoading ? <div className="animate-spin w-5 h-5 border-2 border-white/30 border-t-white rounded-full"/> : <Play className="w-5 h-5 fill-current"/>}
                        </button>
                    </div>
@@ -776,9 +783,9 @@ const App: React.FC = () => {
                           </button>
                         )}
                      </div>
-                     <div className="relative flex items-end gap-2">
-                        {/* Photo, File, and Microphone buttons for chat mode */}
-                        <div className="flex flex-col gap-1 absolute left-2 bottom-3 z-10">
+                     <div className="flex flex-col gap-2">
+                        {/* Attachment buttons row */}
+                        <div className="flex items-center gap-2 px-2">
                             <input type="file" ref={imageInputRef} onChange={handleImageUpload} accept="image/*" className="hidden" />
                             <button onClick={() => imageInputRef.current?.click()} className={`${theme.textMuted} hover:text-white p-1.5 rounded-full hover:bg-white/10 transition-colors`} title="Upload image">
                               <ImageIcon className="w-4 h-4" />
@@ -791,27 +798,30 @@ const App: React.FC = () => {
                               <Mic className="w-4 h-4" />
                             </button>
                         </div>
-                        <textarea 
-                          value={inputInstruction} 
-                          onChange={(e) => setInputInstruction(e.target.value)} 
-                          onKeyDown={(e) => { 
-                            if (e.key === 'Enter' && !e.shiftKey) { 
-                              e.preventDefault(); 
-                              handleSendMessage(); 
-                            } 
-                          }} 
-                          placeholder="Message..." 
-                          className={`w-full ${theme.bgApp} border ${theme.border} rounded-xl pl-12 px-4 py-3 text-sm outline-none resize-none max-h-32 custom-scrollbar shadow-inner`} 
-                          rows={1} 
-                          style={{minHeight: '46px'}} 
-                        />
-                        <button 
-                          onClick={handleSendMessage} 
-                          disabled={isLoading} 
-                          className={`p-3 rounded-xl flex-shrink-0 transition-all ${isLoading ? 'bg-white/5 text-slate-500 cursor-not-allowed' : `${theme.button} ${theme.buttonHover} text-white shadow-lg`}`}
-                        >
-                          <Send className="w-5 h-5" />
-                        </button>
+                        {/* Input row */}
+                        <div className="relative flex items-end gap-2">
+                            <textarea 
+                              value={inputInstruction} 
+                              onChange={(e) => setInputInstruction(e.target.value)} 
+                              onKeyDown={(e) => { 
+                                if (e.key === 'Enter' && !e.shiftKey) { 
+                                  e.preventDefault(); 
+                                  handleSendMessage(); 
+                                } 
+                              }} 
+                              placeholder="Message..." 
+                              className={`flex-1 ${theme.bgApp} border ${theme.border} rounded-xl px-4 py-3 text-sm outline-none resize-none max-h-32 custom-scrollbar shadow-inner`} 
+                              rows={1} 
+                              style={{minHeight: '46px'}} 
+                            />
+                            <button 
+                              onClick={handleSendMessage} 
+                              disabled={isLoading} 
+                              className={`p-3 rounded-xl flex-shrink-0 transition-all ${isLoading ? 'bg-white/5 text-slate-500 cursor-not-allowed' : `${theme.button} ${theme.buttonHover} text-white shadow-lg`}`}
+                            >
+                              <Send className="w-5 h-5" />
+                            </button>
+                        </div>
                      </div>
                  </div>
              )}
@@ -844,6 +854,36 @@ const App: React.FC = () => {
           onClose={() => setShowSettings(false)} 
         />
       )}
+      
+      {/* Tools Management Modal */}
+      <ToolsManagementModal
+        isOpen={showToolsModal}
+        onClose={() => setShowToolsModal(false)}
+        theme={theme}
+      />
+      
+      {/* Git Tracker Modal */}
+      <GitTracker
+        isOpen={showGitTracker}
+        onClose={() => setShowGitTracker(false)}
+        theme={theme}
+        currentProject={activeProject}
+        onCommit={(message, files) => {
+          console.log('Commit:', message, files);
+          alert(`Committed ${files.length} files: ${message}`);
+          // In a real implementation, this would call git service
+        }}
+        onPush={() => {
+          console.log('Push to remote');
+          alert('Pushed changes to remote repository');
+          // In a real implementation, this would call git service
+        }}
+        onPull={() => {
+          console.log('Pull from remote');
+          alert('Pulled changes from remote repository');
+          // In a real implementation, this would call git service
+        }}
+      />
     </div>
   );
 };

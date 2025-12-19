@@ -16,6 +16,10 @@ export enum CodeLanguage {
   JSON = 'JSON',
   PHP = 'PHP',
   BASH = 'Bash',
+  MARKDOWN = 'Markdown',
+  TEXT = 'Text',
+  YAML = 'YAML',
+  XML = 'XML',
   OTHER = 'Other'
 }
 
@@ -103,6 +107,7 @@ export interface Project {
     files: ProjectFile[];
     activeFileId: string;
     lastModified: number;
+    githubUrl?: string;
     metadata?: ProjectMetadata;
     structure?: ProjectStructure;
     gitStatus?: GitStatus;

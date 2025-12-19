@@ -431,6 +431,91 @@ ${safeDependencies.length > 0 ? `Dependencies: ${safeDependencies.slice(0, 8).jo
     };
   }
 
+  // NEW: Intelligent file chunking for large files
+  chunkLargeFile(file: ProjectFile, maxChunkSize: number = 500): Array<{section: string, lineStart: number, lineEnd: number, summary: string}> {
+    if (!file || !file.content) return [];
+    
+    const lines = file.content.split('\n');
+    const chunks: Array<{section: string, lineStart: number, lineEnd: number, summary: string}> = [];
+    
+    // If file is small enough, return as single chunk
+    if (lines.length <= maxChunkSize) {
+      return [{
+        section: file.content,
+        lineStart: 1,
+        lineEnd: lines.length,
+        summary: this.summarizeSection(file.content, file.name)
+      }];
+    }
+    
+    // For large files, chunk by logical sections
+    let currentChunk: string[] = [];
+    let chunkStartLine = 1;
+    let inFunction = false;
+    let braceCount = 0;
+    
+    for (let i = 0; i < lines.length; i++) {
+      const line = lines[i];
+      currentChunk.push(line);
+      
+      // Track function/class boundaries
+      if (line.match(/^(class|function|const\s+\w+\s*=|def\s+|public\s+|private\s+)/)) {
+        inFunction = true;
+      }
+      
+      // Count braces to detect end of blocks
+      braceCount += (line.match(/{/g) || []).length;
+      braceCount -= (line.match(/}/g) || []).length;
+      
+      // Create chunk when we hit max size or end of logical block
+      const shouldChunk = currentChunk.length >= maxChunkSize || 
+                         (inFunction && braceCount === 0 && currentChunk.length > 50);
+      
+      if (shouldChunk) {
+        const chunkContent = currentChunk.join('\n');
+        chunks.push({
+          section: chunkContent,
+          lineStart: chunkStartLine,
+          lineEnd: i + 1,
+          summary: this.summarizeSection(chunkContent, file.name)
+        });
+        
+        currentChunk = [];
+        chunkStartLine = i + 2;
+        inFunction = false;
+      }
+    }
+    
+    // Add remaining lines
+    if (currentChunk.length > 0) {
+      chunks.push({
+        section: currentChunk.join('\n'),
+        lineStart: chunkStartLine,
+        lineEnd: lines.length,
+        summary: this.summarizeSection(currentChunk.join('\n'), file.name)
+      });
+    }
+    
+    return chunks;
+  }
+  
+  private summarizeSection(code: string, fileName: string): string {
+    const lines = code.split('\n').filter(l => l.trim());
+    if (lines.length === 0) return 'Empty section';
+    
+    // Extract key elements
+    const functions = code.match(/(?:function|const)\s+(\w+)|def\s+(\w+)|class\s+(\w+)/g) || [];
+    const imports = code.match(/import\s+.*from|require\(|from\s+\w+\s+import/g) || [];
+    const exports = code.match(/export\s+(default\s+)?(class|function|const)/g) || [];
+    
+    const parts = [];
+    if (imports.length > 0) parts.push(`${imports.length} imports`);
+    if (functions.length > 0) parts.push(`${functions.length} definitions`);
+    if (exports.length > 0) parts.push(`${exports.length} exports`);
+    
+    return parts.length > 0 ? parts.join(', ') : 'Code section';
+  }
+
   private generateUUID(): string {
     return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, function(c) {
       const r = Math.random() * 16 | 0;

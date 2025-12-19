@@ -48,6 +48,114 @@ const safeJsonParse = (jsonStr: string): any => {
   }
 };
 
+// --- INTELLIGENT TOOL PARAMETER FIX ---
+/**
+ * Attempts to automatically fix common tool parameter errors
+ * Returns whether retry should be attempted and fixed parameters
+ */
+const attemptToolParameterFix = (
+  toolName: string,
+  originalArgs: any,
+  errorMessage: string,
+  allFiles: ProjectFile[]
+): { shouldRetry: boolean; fixedArgs?: any; suggestion?: string } => {
+  const fileNames = allFiles.map(f => f.name);
+  
+  // File not found errors
+  if (errorMessage.includes('File') && errorMessage.includes('not found')) {
+    const attemptedFileName = originalArgs.fileName || originalArgs.name;
+    if (attemptedFileName) {
+      // Try fuzzy matching
+      const similarFiles = fileNames.filter(f => 
+        f.toLowerCase().includes(attemptedFileName.toLowerCase()) ||
+        attemptedFileName.toLowerCase().includes(f.toLowerCase())
+      );
+      
+      if (similarFiles.length === 1) {
+        return {
+          shouldRetry: true,
+          fixedArgs: { ...originalArgs, fileName: similarFiles[0], name: similarFiles[0] },
+          suggestion: `Found similar file: ${similarFiles[0]}`
+        };
+      } else if (similarFiles.length > 1) {
+        return {
+          shouldRetry: false,
+          suggestion: `Multiple matches found: ${similarFiles.join(', ')}. Please be more specific.`
+        };
+      }
+      
+      // Check for common path issues (e.g., missing 'src/')
+      const withSrc = `src/${attemptedFileName}`;
+      const withoutSrc = attemptedFileName.replace(/^src\//, '');
+      
+      if (fileNames.includes(withSrc)) {
+        return {
+          shouldRetry: true,
+          fixedArgs: { ...originalArgs, fileName: withSrc, name: withSrc },
+          suggestion: `File exists at ${withSrc}`
+        };
+      } else if (fileNames.includes(withoutSrc)) {
+        return {
+          shouldRetry: true,
+          fixedArgs: { ...originalArgs, fileName: withoutSrc, name: withoutSrc },
+          suggestion: `File exists at ${withoutSrc}`
+        };
+      }
+    }
+  }
+  
+  // Line number out of bounds
+  if (errorMessage.includes('line') && (errorMessage.includes('range') || errorMessage.includes('invalid'))) {
+    const fileName = originalArgs.fileName;
+    const file = allFiles.find(f => f.name === fileName);
+    if (file) {
+      const lineCount = file.content.split('\n').length;
+      const startLine = Math.max(1, Math.min(originalArgs.startLine || 1, lineCount));
+      const endLine = Math.max(startLine, Math.min(originalArgs.endLine || lineCount, lineCount));
+      
+      return {
+        shouldRetry: true,
+        fixedArgs: { ...originalArgs, startLine, endLine },
+        suggestion: `Adjusted line numbers to valid range (1-${lineCount})`
+      };
+    }
+  }
+  
+  // Missing required parameters
+  if (errorMessage.includes('required') || errorMessage.includes('missing')) {
+    if (toolName === 'read_file_section' && !originalArgs.startLine) {
+      return {
+        shouldRetry: true,
+        fixedArgs: { ...originalArgs, startLine: 1, endLine: 50 },
+        suggestion: 'Added default line range (1-50)'
+      };
+    }
+    
+    if (toolName === 'manage_tasks' && !originalArgs.action) {
+      return {
+        shouldRetry: true,
+        fixedArgs: { ...originalArgs, action: 'list' },
+        suggestion: 'Defaulted to list action'
+      };
+    }
+  }
+  
+  // Invalid content format (e.g., empty content for create_file)
+  if (errorMessage.includes('content') && (toolName === 'create_file' || toolName === 'update_file')) {
+    if (!originalArgs.content || originalArgs.content.trim().length === 0) {
+      return {
+        shouldRetry: false,
+        suggestion: 'File content cannot be empty. Please provide actual code/content.'
+      };
+    }
+  }
+  
+  return {
+    shouldRetry: false,
+    suggestion: 'Unable to automatically fix parameters. Check tool requirements.'
+  };
+};
+
 // --- LOCAL MODEL SUPPORT ---
 interface LocalProviderConfig {
   name: string;
@@ -143,49 +251,90 @@ const buildSystemPrompt = (
   knowledgeManager: KnowledgeManager,
   isFollowUpTurn: boolean = false
 ): string => {
-  // Speed Optimization: If this is a follow-up turn (e.g. after read_file),
-  // FORCE the model to be purely functional and skip pleasantries.
   const turnInstructions = isFollowUpTurn ? 
     `URGENT: You are in the middle of a task. Do not explain your reasoning. CALL THE NEXT TOOL IMMEDIATELY.` : 
     `BE CONCISE. Act immediately.`;
 
+  // MODE-SPECIFIC INSTRUCTIONS
+  let modeInstructions = '';
+  let canModifyCode = true;
+  
+  switch (mode) {
+    case 'FIX':
+      modeInstructions = `MODE: FIX - Automated Bug Fixing
+- Analyze error logs/stack traces carefully
+- Identify root cause immediately  
+- Apply fixes using update_file tool
+- Test logic mentally before applying
+- Explain what was wrong and how you fixed it
+- ALWAYS use tools to make changes, never just suggest`;
+      break;
+    
+    case 'EXPLAIN':
+      modeInstructions = `MODE: EXPLAIN - Read-Only Analysis
+- You CANNOT modify any files
+- Provide detailed explanations of code functionality
+- Break down complex logic step-by-step
+- Use read_file to inspect specific sections
+- Use search_files to find related code
+- Suggest improvements but DO NOT implement them`;
+      canModifyCode = false;
+      break;
+    
+    case 'CHAT':
+    case 'NORMAL':
+      modeInstructions = `MODE: INTERACTIVE - Full Development Assistant
+- Answer questions AND implement features
+- Use tools proactively to understand project
+- Create new files, update existing ones
+- Manage tasks using manage_tasks tool
+- Save important knowledge as you learn
+- Be conversational but action-oriented`;
+      break;
+    
+    default:
+      modeInstructions = `MODE: ${mode}`;
+  }
+
   const toolInstructions = hasTools ? `
 CRITICAL TOOL USAGE RULES:
-1. When user asks to CREATE a file → IMMEDIATELY call create_file tool
-2. When user asks to MODIFY/UPDATE/FIX code → IMMEDIATELY call update_file tool
-3. When user asks to SEARCH code → call search_files tool
-4. When you need to READ a specific file → call read_file tool. (If you don't know the path, use list_files first)
-5. When user teaches you something NEW or you discover useful patterns → call save_knowledge tool
-6. DO NOT EXPLAIN what you are going to do. CALL THE TOOL DIRECTLY.
-7. If tool fails, try again with corrected parameters
+1. CREATE FILES: create_file(name, content, language) - Provide COMPLETE content
+2. UPDATE FILES: update_file(name, content) - MUST provide FULL file content${!canModifyCode ? ' (DISABLED in EXPLAIN mode)' : ''}
+3. DELETE FILES: delete_file(name)${!canModifyCode ? ' (DISABLED in EXPLAIN mode)' : ''}
+4. READ FILE: read_file(fileName) - Inspect specific file contents
+5. READ SECTION: read_file_section(fileName, startLine, endLine) - Read specific line range
+6. LIST FILES: list_files(path?) - See project structure
+7. SEARCH CODE: search_files(query) - Find code patterns across project
+8. SAVE KNOWLEDGE: save_knowledge(tags, content) - Use tags like #react, #auth, #user-pref
+9. MANAGE TASKS: manage_tasks(action, task?, status?) - Actions: add, update, complete, delete
 
-AVAILABLE TOOLS: create_file, update_file, delete_file, list_files, search_files, read_file, save_knowledge, manage_tasks
-
-KNOWLEDGE SAVING GUIDELINES:
-- Save user preferences (coding style, architecture choices, tool preferences)
-- Save project-specific patterns and conventions
-- Save learned concepts and best practices
+EXECUTION PROTOCOL:
+- DO NOT ASK permission - JUST USE TOOLS
+- DO NOT EXPLAIN what you will do - DO IT
+- If tool fails, fix parameters and retry
+- Chain multiple tools for complex tasks
 ` : '';
 
   return `
 ${coderRole?.systemPrompt || 'You are an expert AI coding assistant that learns and remembers across sessions.'}
 
-MODE: ${mode === 'FIX' ? 'Execute code changes and fixes' : 'Explain and answer questions'}
+${modeInstructions}
 VERBOSITY: LOW. ${turnInstructions}
 
+PROJECT CONTEXT:
 ${fileContext}
-${knowledgeContext}
 
+${knowledgeContext ? `REMEMBERED KNOWLEDGE:\n${knowledgeContext}\n` : ''}
 USER REQUEST: ${currentMessage}
 
 ${toolInstructions}
 
 RESPONSE GUIDELINES:
-- Be direct and action-oriented.
-- Avoid chatter. If a tool is needed, use it as the VERY FIRST part of your response.
-- Save important learnings using save_knowledge tool
-- Reference previous knowledge when relevant
-- When fixing code, show the complete fixed file content
+- Think step-by-step but don't narrate your thinking
+- Use tools proactively and immediately
+- Save learnings for future sessions
+- Be helpful, accurate, and efficient
+- Provide complete, working code
 `;
 };
 
@@ -285,13 +434,30 @@ const executeToolAction = (
       if (onStatusUpdate) onStatusUpdate(`📖 Reading ${args.fileName}...`);
       const f = files.find(file => file.name === args.fileName);
       if (f) {
-        toolOutput = `Content of ${f.name}:\n\`\`\`${f.language}\n${f.content}\n\`\`\``;
+        const lineCount = f.content.split('\n').length;
+        toolOutput = `Content of ${f.name} (${lineCount} lines):\n\`\`\`${f.language}\n${f.content}\n\`\`\``;
         logger.logToolCall('read_file', true, `Read ${f.name}`);
       } else {
         // ENHANCEMENT: Return file list if file is not found
         const fileList = files.map(f => f.name).join('\n');
         toolOutput = `Error: File "${args.fileName}" not found.\n\nHere is a list of ALL valid files in the project. Please pick one from this list:\n${fileList}`;
         logger.logToolCall('read_file', false, `File not found: ${args.fileName} (Sent file list)`);
+      }
+    } else if (toolName === 'read_file_section') {
+      if (onStatusUpdate) onStatusUpdate(`📖 Reading ${args.fileName} lines ${args.startLine}-${args.endLine}...`);
+      const f = files.find(file => file.name === args.fileName);
+      if (f) {
+        const lines = f.content.split('\n');
+        const start = Math.max(0, args.startLine - 1);
+        const end = Math.min(lines.length, args.endLine);
+        const section = lines.slice(start, end).join('\n');
+        const totalLines = lines.length;
+        toolOutput = `Section of ${f.name} (lines ${args.startLine}-${args.endLine} of ${totalLines}):\n\`\`\`${f.language}\n${section}\n\`\`\``;
+        logger.logToolCall('read_file_section', true, `Read ${f.name} lines ${args.startLine}-${args.endLine}`);
+      } else {
+        const fileList = files.map(f => f.name).join('\n');
+        toolOutput = `Error: File "${args.fileName}" not found.\n\nAvailable files:\n${fileList}`;
+        logger.logToolCall('read_file_section', false, `File not found: ${args.fileName}`);
       }
     } else if (toolName === 'save_knowledge') {
       if (onStatusUpdate) onStatusUpdate(`💾 Saving knowledge...`);
@@ -302,6 +468,341 @@ const executeToolAction = (
       );
       toolOutput = `Saved knowledge: ${args.content}`;
       logger.logToolCall('save_knowledge', true, `Saved knowledge`);
+    } else if (toolName === 'manage_tasks') {
+      if (onStatusUpdate) onStatusUpdate(`📋 Managing tasks...`);
+      const { action, task, taskId, status, phase } = args;
+      
+      // Note: This tool returns instructions for the UI to handle
+      // The actual task management happens in the UI (App.tsx processToolCalls)
+      if (action === 'add' && task) {
+        toolOutput = `Task added to project: "${task}" ${phase ? `in phase "${phase}"` : ''}`;
+        logger.logToolCall('manage_tasks', true, `Added task: ${task}`);
+      } else if (action === 'update' && taskId) {
+        toolOutput = `Task ${taskId} updated${status ? ` to status: ${status}` : ''}`;
+        logger.logToolCall('manage_tasks', true, `Updated task ${taskId}`);
+      } else if (action === 'complete' && taskId) {
+        toolOutput = `Task ${taskId} marked as completed`;
+        logger.logToolCall('manage_tasks', true, `Completed task ${taskId}`);
+      } else if (action === 'delete' && taskId) {
+        toolOutput = `Task ${taskId} deleted from project`;
+        logger.logToolCall('manage_tasks', true, `Deleted task ${taskId}`);
+      } else if (action === 'list') {
+        toolOutput = `Task list will be shown to user in UI`;
+        logger.logToolCall('manage_tasks', true, `Listed tasks`);
+      } else {
+        toolOutput = `Error: Invalid manage_tasks parameters. action=${action}, task=${task}, taskId=${taskId}`;
+      }
+    } else if (toolName === 'replace_section') {
+      if (onStatusUpdate) onStatusUpdate(`✏️ Replacing lines ${args.startLine}-${args.endLine} in ${args.fileName}...`);
+      const f = files.find(file => file.name === args.fileName);
+      if (f) {
+        const lines = f.content.split('\n');
+        const start = Math.max(0, args.startLine - 1);
+        const end = Math.min(lines.length, args.endLine);
+        
+        // Replace the section
+        const before = lines.slice(0, start);
+        const after = lines.slice(end);
+        const newLines = args.newContent.split('\n');
+        const updatedContent = [...before, ...newLines, ...after].join('\n');
+        
+        change = { 
+          id: Date.now().toString(),
+          fileName: f.name, 
+          originalContent: f.content, 
+          newContent: updatedContent, 
+          type: 'update' as const
+        };
+        toolOutput = `✅ Replaced lines ${args.startLine}-${args.endLine} in ${f.name}`;
+        logger.logToolCall('replace_section', true, `Modified ${f.name} lines ${args.startLine}-${args.endLine}`);
+      } else {
+        toolOutput = `Error: File "${args.fileName}" not found.`;
+        logger.logToolCall('replace_section', false, `File not found: ${args.fileName}`);
+      }
+    } else if (toolName === 'codebase_search') {
+      if (onStatusUpdate) onStatusUpdate(`🔎 Searching codebase for "${args.pattern}"...`);
+      const { pattern, isRegex = false, filePattern, caseSensitive = false, contextLines = 2 } = args;
+      
+      let results: Array<{fileName: string, line: number, content: string, context: string[]}> = [];
+      let filteredFiles = files;
+      
+      // Apply file pattern filter
+      if (filePattern) {
+        const regex = filePattern.replace(/\*/g, '.*').replace(/\?/g, '.');
+        const fileRegex = new RegExp(regex);
+        filteredFiles = files.filter(f => fileRegex.test(f.name));
+      }
+      
+      // Search through files
+      for (const file of filteredFiles) {
+        const fileLines = file.content.split('\n');
+        const searchRegex = isRegex 
+          ? new RegExp(pattern, caseSensitive ? 'g' : 'gi')
+          : new RegExp(pattern.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), caseSensitive ? 'g' : 'gi');
+        
+        fileLines.forEach((line, idx) => {
+          if (searchRegex.test(line)) {
+            const start = Math.max(0, idx - contextLines);
+            const end = Math.min(fileLines.length, idx + contextLines + 1);
+            const contextBefore = fileLines.slice(start, idx);
+            const contextAfter = fileLines.slice(idx + 1, end);
+            
+            results.push({
+              fileName: file.name,
+              line: idx + 1,
+              content: line,
+              context: [...contextBefore, `>>> ${line}`, ...contextAfter]
+            });
+          }
+        });
+      }
+      
+      if (results.length > 0) {
+        const summary = `Found ${results.length} match(es) across ${new Set(results.map(r => r.fileName)).size} file(s):\n\n`;
+        const details = results.slice(0, 50).map(r => 
+          `📄 ${r.fileName}:${r.line}\n${r.context.join('\n')}\n`
+        ).join('\n---\n');
+        toolOutput = summary + details + (results.length > 50 ? `\n... and ${results.length - 50} more matches` : '');
+      } else {
+        toolOutput = `No matches found for "${pattern}"`;
+      }
+      logger.logToolCall('codebase_search', true, `Found ${results.length} matches`);
+    } else if (toolName === 'run_command') {
+      if (onStatusUpdate) onStatusUpdate(`⚙️ Running command: ${args.command}...`);
+      
+      // Safety check - block dangerous commands
+      const dangerous = ['rm -rf', 'format', 'mkfs', 'dd if=', ':(){:|:&};:'];
+      const isDangerous = dangerous.some(cmd => args.command.includes(cmd));
+      
+      if (isDangerous) {
+        toolOutput = `❌ Error: Command blocked for safety reasons. Refusing to execute potentially destructive command.`;
+        logger.logToolCall('run_command', false, 'Blocked dangerous command');
+      } else {
+        // In a real implementation, this would execute the command
+        // For safety, we'll return a placeholder
+        toolOutput = `⚠️ Command execution not implemented in browser. Command: "${args.command}"\n\nSuggestion: User should run this in their terminal.`;
+        logger.logToolCall('run_command', false, 'Not implemented in browser');
+      }
+    } else if (toolName === 'git_operations') {
+      if (onStatusUpdate) onStatusUpdate(`🔀 Git ${args.operation}...`);
+      
+      // Placeholder - real implementation would use actual git
+      if (args.operation === 'status') {
+        toolOutput = `Git Status:\n(Not implemented - this would show modified files, staged changes, etc.)`;
+      } else if (args.operation === 'diff') {
+        toolOutput = `Git Diff:\n(Not implemented - this would show file changes)`;
+      } else if (args.operation === 'log') {
+        toolOutput = `Git Log:\n(Not implemented - this would show commit history)`;
+      } else if (args.operation === 'commit') {
+        toolOutput = `Git Commit:\n(Not implemented - would commit staged files with message: "${args.message}")`;
+      }
+      logger.logToolCall('git_operations', false, 'Not implemented in browser');
+    } else if (toolName === 'refactor_code') {
+      if (onStatusUpdate) onStatusUpdate(`🔧 Refactoring ${args.refactorType} in ${args.fileName}...`);
+      
+      const f = files.find(file => file.name === args.fileName);
+      if (!f) {
+        toolOutput = `Error: File "${args.fileName}" not found.`;
+        logger.logToolCall('refactor_code', false, `File not found`);
+      } else {
+        // Placeholder for refactoring logic
+        if (args.refactorType === 'rename') {
+          const regex = new RegExp(`\\b${args.target}\\b`, 'g');
+          const newContent = f.content.replace(regex, args.newName || args.target);
+          const occurrences = (f.content.match(regex) || []).length;
+          
+          change = { 
+            id: Date.now().toString(),
+            fileName: f.name, 
+            originalContent: f.content, 
+            newContent: newContent, 
+            type: 'update' as const
+          };
+          toolOutput = `✅ Renamed "${args.target}" to "${args.newName}" (${occurrences} occurrences)`;
+          logger.logToolCall('refactor_code', true, `Renamed in ${f.name}`);
+        } else if (args.refactorType === 'extract_function') {
+          toolOutput = `Extract function refactoring: Lines ${args.startLine}-${args.endLine}\n(Advanced refactoring not yet implemented)`;
+          logger.logToolCall('refactor_code', false, 'Extract function not implemented');
+        } else {
+          toolOutput = `Refactor type "${args.refactorType}" not fully implemented.`;
+          logger.logToolCall('refactor_code', false, 'Not implemented');
+        }
+      }
+    } else if (toolName === 'generate_tests') {
+      if (onStatusUpdate) onStatusUpdate(`🧪 Generating tests for ${args.fileName}...`);
+      const f = files.find(file => file.name === args.fileName);
+      if (!f) {
+        toolOutput = `Error: File "${args.fileName}" not found.`;
+        logger.logToolCall('generate_tests', false, 'File not found');
+      } else {
+        const testType = args.testType || 'unit';
+        const framework = args.framework || 'vitest';
+        const coverage = args.coverage || 'comprehensive';
+        
+        // Generate test file name
+        const testFileName = f.name.replace(/\.(tsx?|jsx?)$/, '.test.$1');
+        const testTemplate = `import { describe, it, expect${framework === 'vitest' ? ', vi' : ''} } from '${framework}';\nimport { /* imports from ${f.name} */ } from './${f.name.split('/').pop()}';\n\ndescribe('${f.name}', () => {\n  it('should ${coverage === 'basic' ? 'work correctly' : 'handle normal cases'}', () => {\n    // TODO: Add test implementation\n    expect(true).toBe(true);\n  });\n\n  ${coverage !== 'basic' ? `it('should handle edge cases', () => {\n    // TODO: Add edge case tests\n  });\n\n  it('should handle error cases', () => {\n    // TODO: Add error handling tests\n  });` : ''}\n});\n`;
+        
+        toolOutput = `✅ Generated ${testType} tests for ${f.name}\n\nTest file: ${testFileName}\n\`\`\`typescript\n${testTemplate}\`\`\`\n\n💡 Review and customize the tests based on your specific requirements.`;
+        logger.logToolCall('generate_tests', true, `Generated tests for ${f.name}`);
+      }
+    } else if (toolName === 'security_scan') {
+      if (onStatusUpdate) onStatusUpdate(`🔒 Running security scan...`);
+      const scope = args.scope || 'project';
+      const findings: string[] = [];
+      
+      const filesToScan = scope === 'file' && args.fileName 
+        ? files.filter(f => f.name === args.fileName)
+        : files;
+      
+      // Simple security checks
+      for (const file of filesToScan) {
+        const content = file.content.toLowerCase();
+        
+        // Check for hardcoded secrets
+        if (content.match(/api[_-]?key|password|secret|token.*=.*['"][\w-]{20,}['"]/i)) {
+          findings.push(`⚠️ ${file.name}: Possible hardcoded secret detected`);
+        }
+        
+        // Check for SQL injection vulnerabilities
+        if (content.includes('query(') && content.includes('+') && content.includes('req.')) {
+          findings.push(`🔴 ${file.name}: Potential SQL injection vulnerability (string concatenation in query)`);
+        }
+        
+        // Check for XSS vulnerabilities
+        if (content.includes('innerhtml') || content.includes('dangerouslysetinnerhtml')) {
+          findings.push(`⚠️ ${file.name}: Potential XSS risk (innerHTML usage)`);
+        }
+        
+        // Check for eval usage
+        if (content.includes('eval(')) {
+          findings.push(`🔴 ${file.name}: Dangerous eval() usage detected`);
+        }
+        
+        // Check for console.log in production
+        if (content.includes('console.log') || content.includes('console.error')) {
+          findings.push(`💡 ${file.name}: Console statements found (consider removing for production)`);
+        }
+      }
+      
+      toolOutput = findings.length > 0
+        ? `Security Scan Results:\n\n${findings.join('\n')}\n\n🔍 Scanned ${filesToScan.length} file(s)`
+        : `✅ No security issues detected in ${filesToScan.length} file(s)`;
+      
+      logger.logToolCall('security_scan', true, `Found ${findings.length} issues`);
+    } else if (toolName === 'analyze_dependencies') {
+      if (onStatusUpdate) onStatusUpdate(`📦 Analyzing dependencies...`);
+      const packageJson = files.find(f => f.name === 'package.json');
+      
+      if (!packageJson) {
+        toolOutput = `Error: package.json not found in project.`;
+        logger.logToolCall('analyze_dependencies', false, 'No package.json');
+      } else {
+        try {
+          const pkg = JSON.parse(packageJson.content);
+          const deps = { ...pkg.dependencies, ...pkg.devDependencies };
+          const depCount = Object.keys(deps).length;
+          
+          toolOutput = `📦 Dependency Analysis:\n\n`;
+          toolOutput += `Total dependencies: ${depCount}\n`;
+          toolOutput += `Dependencies: ${Object.keys(pkg.dependencies || {}).length}\n`;
+          toolOutput += `Dev dependencies: ${Object.keys(pkg.devDependencies || {}).length}\n\n`;
+          toolOutput += `💡 Key dependencies:\n${Object.entries(deps).slice(0, 10).map(([name, ver]) => `  • ${name}: ${ver}`).join('\n')}`;
+          
+          if (depCount > 10) toolOutput += `\n  ... and ${depCount - 10} more`;
+          
+          toolOutput += `\n\n⚠️ Note: For detailed outdated/security analysis, use npm audit or npm outdated`;
+          
+          logger.logToolCall('analyze_dependencies', true, `Analyzed ${depCount} dependencies`);
+        } catch (e) {
+          toolOutput = `Error: Invalid package.json format`;
+          logger.logToolCall('analyze_dependencies', false, 'Invalid JSON');
+        }
+      }
+    } else if (toolName === 'code_review') {
+      if (onStatusUpdate) onStatusUpdate(`👀 Performing code review...`);
+      const fileToReview = args.fileName ? files.find(f => f.name === args.fileName) : null;
+      const reviewFiles = fileToReview ? [fileToReview] : files.slice(0, 5); // Limit to 5 files for project review
+      const issues: string[] = [];
+      
+      for (const file of reviewFiles) {
+        const content = file.content;
+        const lines = content.split('\n');
+        
+        // Check for long functions
+        let braceDepth = 0;
+        let functionStart = -1;
+        lines.forEach((line, idx) => {
+          if (line.match(/function|const.*=>|class/)) functionStart = idx;
+          braceDepth += (line.match(/{/g) || []).length;
+          braceDepth -= (line.match(/}/g) || []).length;
+          if (braceDepth === 0 && functionStart >= 0 && idx - functionStart > 50) {
+            issues.push(`📏 ${file.name}:${functionStart + 1}: Function too long (${idx - functionStart} lines)`);
+            functionStart = -1;
+          }
+        });
+        
+        // Check for missing error handling
+        if (content.includes('async ') && !content.includes('try') && !content.includes('catch')) {
+          issues.push(`⚠️ ${file.name}: Async code without error handling`);
+        }
+        
+        // Check for TODO/FIXME comments
+        lines.forEach((line, idx) => {
+          if (line.match(/\/\/.*TODO|\/\/.*FIXME/i)) {
+            issues.push(`💡 ${file.name}:${idx + 1}: ${line.trim()}`);
+          }
+        });
+        
+        // Check for magic numbers
+        const magicNumbers = content.match(/[^0-9a-zA-Z_](100|200|404|500|1000|3600)[^0-9a-zA-Z_]/g);
+        if (magicNumbers && magicNumbers.length > 3) {
+          issues.push(`🔢 ${file.name}: Consider extracting magic numbers to constants`);
+        }
+      }
+      
+      toolOutput = issues.length > 0
+        ? `Code Review Results:\n\n${issues.slice(0, 20).join('\n')}${issues.length > 20 ? `\n\n... and ${issues.length - 20} more issues` : ''}`
+        : `✅ No significant issues found in code review`;
+      
+      logger.logToolCall('code_review', true, `Found ${issues.length} issues`);
+    } else if (toolName === 'performance_profile') {
+      if (onStatusUpdate) onStatusUpdate(`⚡ Analyzing performance...`);
+      const fileToProfile = args.fileName ? files.find(f => f.name === args.fileName) : null;
+      const profileFiles = fileToProfile ? [fileToProfile] : files.filter(f => f.name.match(/\.(tsx?|jsx?)$/)).slice(0, 5);
+      const findings: string[] = [];
+      
+      for (const file of profileFiles) {
+        const content = file.content;
+        
+        // Check for React re-render issues
+        if (content.includes('useState') && !content.includes('useMemo') && !content.includes('useCallback')) {
+          findings.push(`⚡ ${file.name}: Consider using useMemo/useCallback to prevent unnecessary re-renders`);
+        }
+        
+        // Check for large inline functions
+        const inlineFunctions = content.match(/\{[^}]{200,}\}/g);
+        if (inlineFunctions && inlineFunctions.length > 0) {
+          findings.push(`📦 ${file.name}: Large inline functions detected (${inlineFunctions.length})`);
+        }
+        
+        // Check for synchronous blocking operations
+        if (content.includes('JSON.parse') && content.includes('localStorage')) {
+          findings.push(`🐌 ${file.name}: Synchronous localStorage + JSON.parse may block UI`);
+        }
+        
+        // Check complexity
+        const cyclomaticComplexity = (content.match(/if|else|for|while|case|catch|\?\?|\|\|/g) || []).length;
+        if (cyclomaticComplexity > 20) {
+          findings.push(`🔴 ${file.name}: High cyclomatic complexity (${cyclomaticComplexity})`);
+        }
+      }
+      
+      toolOutput = findings.length > 0
+        ? `Performance Analysis:\n\n${findings.join('\n')}\n\n💡 Consider optimizing these areas for better performance`
+        : `✅ No significant performance issues detected`;
+      
+      logger.logToolCall('performance_profile', true, `Analyzed ${profileFiles.length} files`);
     } else {
       toolOutput = `Error: Unknown tool "${toolName}"`;
     }
@@ -365,15 +866,10 @@ export const fixCodeWithGemini = async (request: FixRequest): Promise<FixRespons
   // Knowledge Retrieval
   const messageTokens = currentMessage.toLowerCase().split(/[\s,.]+/);
   const tagsInMessage: string[] = currentMessage.match(/#[\w-]+/g) || [];
-  const relevantKnowledge = (knowledgeBase || []).filter(entry => {
-    if (!entry.tags) return false;
-    if (entry.tags.some(tag => tagsInMessage.includes(tag))) return true;
-    if (entry.tags.includes('#global')) return true;
-    return entry.tags.some(tag => {
-      const bareTag = tag.replace('#', '').toLowerCase();
-      return messageTokens.includes(bareTag) || bareTag.split('-').every(part => messageTokens.includes(part));
-    });
-  });
+  
+  // Use enhanced knowledge manager for better retrieval
+  const fileNames = safeAllFiles.map(f => f.name);
+  const relevantKnowledge = knowledgeManager.getRelevantKnowledge(currentMessage, fileNames);
   
   const knowledgeContext = relevantKnowledge.length > 0 ? 
     `\nRELEVANT KNOWLEDGE/PREFERENCES:\n${relevantKnowledge.map(k => `- ${k.content} [${k.tags.join(', ')}]`).join('\n')}` : "";
@@ -469,7 +965,22 @@ export const fixCodeWithGemini = async (request: FixRequest): Promise<FixRespons
         };
         allToolCalls.push(toolCall);
 
-        const { output, change } = executeToolAction(fc.name, args, safeAllFiles, logger, knowledgeManager);
+        let { output, change } = executeToolAction(fc.name, args, safeAllFiles, logger, knowledgeManager);
+        
+        // ENHANCED: Intelligent retry logic for common tool errors
+        if (output.startsWith('Error:')) {
+          const retryResult = attemptToolParameterFix(fc.name, args, output, safeAllFiles);
+          if (retryResult.shouldRetry) {
+            console.log(`🔧 Retrying ${fc.name} with fixed parameters:`, retryResult.fixedArgs);
+            const retryExecution = executeToolAction(fc.name, retryResult.fixedArgs, safeAllFiles, logger, knowledgeManager);
+            if (!retryExecution.output.startsWith('Error:')) {
+              output = `✅ Auto-fixed parameters and succeeded:\n${retryExecution.output}`;
+              change = retryExecution.change;
+            } else {
+              output = `❌ Retry failed. Original error: ${output}\n\nSuggestion: ${retryResult.suggestion}`;
+            }
+          }
+        }
         
         if (change) allProposedChanges.push(change);
 
@@ -520,9 +1031,9 @@ export const streamFixCodeWithGemini = async (
   let apiKey = llmConfig.apiKey || '';
   let baseUrl = llmConfig.baseUrl || '';
   
+  // Note: Gemini streaming with tools may have limitations, but we'll attempt it
   if (isGemini) {
-    callbacks.onError('Streaming with multi-turn tools is not fully supported for Gemini in this version. Please use non-streaming mode.');
-    return;
+    console.warn('⚠️ Gemini streaming with tools may be limited. Consider non-streaming mode for complex tasks.');
   }
   
   if (isLocal) {
@@ -545,15 +1056,10 @@ export const streamFixCodeWithGemini = async (
 
     const messageTokens = currentMessage.toLowerCase().split(/[\s,.]+/);
     const tagsInMessage: string[] = currentMessage.match(/#[\w-]+/g) || [];
-    const relevantKnowledge = (knowledgeBase || []).filter(entry => {
-      if (!entry.tags) return false;
-      if (entry.tags.some(tag => tagsInMessage.includes(tag))) return true;
-      if (entry.tags.includes('#global')) return true;
-      return entry.tags.some(tag => {
-        const bareTag = tag.replace('#', '').toLowerCase();
-        return messageTokens.includes(bareTag) || bareTag.split('-').every(part => messageTokens.includes(part));
-      });
-    });
+    
+    // Use enhanced knowledge manager for better retrieval
+    const fileNames = safeAllFiles.map(f => f.name);
+    const relevantKnowledge = knowledgeManager.getRelevantKnowledge(currentMessage, fileNames);
     
     const knowledgeContext = relevantKnowledge.length > 0 ? 
       `\nRELEVANT KNOWLEDGE:\n${relevantKnowledge.map(k => `- ${k.content}`).join('\n')}` : "";
@@ -675,9 +1181,14 @@ export const streamFixCodeWithGemini = async (
             if (change && callbacks.onProposedChanges) {
               callbacks.onProposedChanges([change]);
               // Visual feedback in stream
-              const successMsg = `\n> [Action]: ${tc.name} executed successfully.`;
+              const successMsg = `\n\n✅ [${tc.name}] Executed successfully\n`;
               accumulatedGlobalStream += successMsg;
               callbacks.onContent(successMsg);
+            } else if (!change && tc.name !== 'list_files' && tc.name !== 'search_files' && tc.name !== 'read_file' && tc.name !== 'save_knowledge') {
+              // Tool executed but no change (might be an error)
+              const feedbackMsg = `\n\n⚠️ [${tc.name}] ${output.slice(0, 100)}...\n`;
+              accumulatedGlobalStream += feedbackMsg;
+              callbacks.onContent(feedbackMsg);
             }
 
             // 3. Feed result back to LLM

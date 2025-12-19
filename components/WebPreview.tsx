@@ -334,7 +334,12 @@ const WebPreview: React.FC<WebPreviewProps> = ({ files, theme }) => {
               key={key}
               srcDoc={getSrcDoc()}
               className="w-full h-full border-none bg-white"
-              sandbox="allow-scripts allow-modals allow-forms allow-same-origin"
+              sandbox="allow-scripts allow-modals allow-forms allow-same-origin allow-popups"
+              title="Web Preview"
+              onError={(e) => {
+                console.error('iframe error:', e);
+                setRuntimeError('Failed to load preview. Check console for details.');
+              }}
             />
           </div>
         )}

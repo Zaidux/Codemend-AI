@@ -1,6 +1,7 @@
-import { Project, ProjectFile, CodeLanguage } from '../types';
+import { Project, ProjectFile, CodeLanguage, FileChange } from '../types';
 import JSZip from 'jszip';
-import { ProjectUtils } from '../utils/projectUtils';
+import { ProjectUtils, mergeProjects, detectMergeConflicts } from '../utils/projectUtils';
+import { projectService } from './projectService';
 
 const GITHUB_API_BASE = 'https://api.github.com';
 
@@ -75,8 +76,7 @@ export const findDuplicateProject = async (projects: Project[], repoInput: strin
             name: 'test',
             files: files,
             activeFileId: files[0]?.id || '',
-            lastModified: Date.now(),
-            createdAt: Date.now()
+            lastModified: Date.now()
         };
 
         // Find similar projects
@@ -266,7 +266,14 @@ const fetchViaZip = async (owner: string, repo: string, token?: string): Promise
 
     // Analyze project structure immediately
     const structure = ProjectUtils.analyzeProjectStructure(files);
-    const issues = ProjectUtils.findPotentialIssues({ files });
+    const tempProject: Project = {
+        id: 'temp',
+        name: `${owner}/${repo}`,
+        files,
+        activeFileId: files[0]?.id || '',
+        lastModified: Date.now()
+    };
+    const issues = ProjectUtils.findPotentialIssues(tempProject);
 
     console.log('📊 Repository Analysis:', {
         name: `${owner}/${repo}`,
@@ -328,8 +335,15 @@ export const fetchRepoContents = async (input: string, token?: string): Promise<
 
         try {
             const result = await fetchViaZip(owner, repo, token);
-            const stats = ProjectUtils.generateProjectStats({ files: result.files });
-            const issues = ProjectUtils.findPotentialIssues({ files: result.files });
+            const tempProject: Project = {
+                id: 'temp',
+                name: result.name,
+                files: result.files,
+                activeFileId: result.files[0]?.id || '',
+                lastModified: Date.now()
+            };
+            const stats = ProjectUtils.generateProjectStats(tempProject);
+            const issues = ProjectUtils.findPotentialIssues(tempProject);
             
             return {
                 name: result.name,
@@ -347,8 +361,15 @@ export const fetchRepoContents = async (input: string, token?: string): Promise<
             }
 
             const structure = ProjectUtils.analyzeProjectStructure(files);
-            const stats = ProjectUtils.generateProjectStats({ files });
-            const issues = ProjectUtils.findPotentialIssues({ files });
+            const tempProject: Project = {
+                id: 'temp',
+                name: `${owner}/${repo}`,
+                files,
+                activeFileId: files[0]?.id || '',
+                lastModified: Date.now()
+            };
+            const stats = ProjectUtils.generateProjectStats(tempProject);
+            const issues = ProjectUtils.findPotentialIssues(tempProject);
 
             return {
                 name: `${owner}/${repo}`,
@@ -401,12 +422,7 @@ export const updateExistingProject = async (project: Project, token?: string): P
             ...mergedProject,
             name: repoData.name,
             lastModified: Date.now(),
-            metadata: {
-                ...mergedProject.metadata,
-                lastUpdate: Date.now(),
-                updateChanges: changes.length,
-                updateConflicts: conflicts.length
-            }
+            structure: repoData.structure
         };
 
         return {
@@ -448,13 +464,29 @@ export const handleGitHubImport = async (
         const duplicateResult = await findDuplicateProject(existingProjects, repoInput, repoData.files);
 
         if (duplicateResult.project) {
+            // Detect what changes would be made
+            const changes = await projectService.detectChanges(duplicateResult.project, repoData.files);
+            const hasChanges = changes.length > 0;
+            
+            // Create detailed change summary
+            const addedCount = changes.filter(c => c.type === 'added').length;
+            const modifiedCount = changes.filter(c => c.type === 'modified').length;
+            const deletedCount = changes.filter(c => c.type === 'deleted').length;
+            
+            const changeSummary = hasChanges 
+                ? `\n\nChanges detected:\n` +
+                  `  • ${addedCount} file(s) added\n` +
+                  `  • ${modifiedCount} file(s) modified\n` +
+                  `  • ${deletedCount} file(s) deleted`
+                : '\n\n⚠️ No changes detected - repository appears identical.';
+
             if (duplicateResult.reason === 'similar' && duplicateResult.similarity && duplicateResult.similarity < 0.9) {
-                // Similar but not exact match - ask user
+                // Similar but not exact match - warn user about potential duplicate
                 const shouldProceed = window.confirm(
-                    `Found a similar project "${duplicateResult.project.name}" (${Math.round(duplicateResult.similarity * 100)}% similar).\n\n` +
-                    `Do you want to create a new project anyway?\n\n` +
-                    `Click "OK" to create new project\n` +
-                    `Click "Cancel" to go back`
+                    `⚠️ Found a similar project "${duplicateResult.project.name}" (${Math.round(duplicateResult.similarity * 100)}% similar).\n\n` +
+                    `This might be a duplicate. Do you want to:\n\n` +
+                    `• Click "OK" to create a NEW separate project\n` +
+                    `• Click "Cancel" to go back and check the existing project`
                 );
 
                 if (!shouldProceed) {
@@ -465,16 +497,40 @@ export const handleGitHubImport = async (
                 }
                 // Continue to create new project
             } else {
-                // Exact match or very similar - ask to update
+                // Exact match - ask to merge/update
                 const shouldUpdate = window.confirm(
-                    `Project "${duplicateResult.project.name}" already exists.\n\n` +
-                    `Do you want to update it with the latest changes from GitHub?\n\n` +
-                    `Click "OK" to update existing project\n` +
-                    `Click "Cancel" to go back`
+                    `📁 Project "${duplicateResult.project.name}" already exists!${changeSummary}\n\n` +
+                    `Options:\n` +
+                    `• Click "OK" to MERGE changes from GitHub into existing project\n` +
+                    `• Click "Cancel" to skip import and keep existing project\n\n` +
+                    (hasChanges ? `⚠️ Merging will update your local files with changes from GitHub.` : `✓ Repository is up-to-date.`)
                 );
 
                 if (shouldUpdate) {
+                    if (!hasChanges) {
+                        // No changes, just return the existing project
+                        console.log('✓ Project is already up-to-date');
+                        onUpdate?.(duplicateResult.project, [], []);
+                        return { 
+                            action: 'updated', 
+                            project: duplicateResult.project,
+                            changes: [],
+                            conflicts: []
+                        };
+                    }
+
+                    // Perform the update/merge
                     const updateResult = await updateExistingProject(duplicateResult.project, token);
+                    
+                    // Log the changes for user review
+                    console.log('📝 Changes merged:');
+                    if (addedCount > 0) console.log(`  ✅ Added ${addedCount} files`);
+                    if (modifiedCount > 0) console.log(`  ✏️ Modified ${modifiedCount} files`);
+                    if (deletedCount > 0) console.log(`  ❌ Deleted ${deletedCount} files`);
+                    if (updateResult.conflicts.length > 0) {
+                        console.warn(`  ⚠️ ${updateResult.conflicts.length} conflicts detected - review manually`);
+                    }
+
                     onUpdate?.(updateResult.project, updateResult.changes, updateResult.conflicts);
                     return { 
                         action: 'updated', 
@@ -483,6 +539,7 @@ export const handleGitHubImport = async (
                         conflicts: updateResult.conflicts
                     };
                 } else {
+                    console.log('Import cancelled by user');
                     return { action: 'cancelled' };
                 }
             }
@@ -496,16 +553,11 @@ export const handleGitHubImport = async (
             activeFileId: repoData.files[0]?.id || '',
             githubUrl: repoInput,
             lastModified: Date.now(),
-            createdAt: Date.now(),
+            structure: repoData.structure,
             metadata: {
                 description: '',
                 tags: [],
-                version: '1.0.0',
-                githubUrl: repoInput,
-                structure: repoData.structure,
-                stats: repoData.stats,
-                issues: repoData.issues,
-                lastAnalyzed: Date.now()
+                version: '1.0.0'
             }
         };
 

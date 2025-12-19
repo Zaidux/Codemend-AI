@@ -1,4 +1,4 @@
-import { Project, ProjectFile, ProjectSummary, FileChange, GitStatus } from '../types';
+import { Project, ProjectFile, ProjectSummary, FileChange, GitStatus, CodeLanguage } from '../types';
 import { contextService } from './contextService';
 import { extractRepoName } from './githubService';
 import { ProjectUtils, mergeProjects, detectMergeConflicts } from '../utils/projectUtils';
@@ -18,31 +18,36 @@ export class ProjectService {
 
   // Create project with enhanced analysis
   async createProject(name: string, files: ProjectFile[] = [], githubUrl?: string): Promise<Project> {
+    const tempId = this.generateUUID();
+    
+    // Create a temp project for analysis
+    const tempProject: Project = {
+      id: tempId,
+      name: name.trim(),
+      files: files,
+      activeFileId: files[0]?.id || '',
+      lastModified: Date.now()
+    };
+    
     // Analyze project structure for better metadata
     const projectStructure = ProjectUtils.analyzeProjectStructure(files);
-    const projectStats = ProjectUtils.generateProjectStats({ files });
-    const potentialIssues = ProjectUtils.findPotentialIssues({ files });
+    const projectStats = ProjectUtils.generateProjectStats(tempProject);
+    const potentialIssues = ProjectUtils.findPotentialIssues(tempProject);
 
     // Optimize files (remove duplicates, etc.)
-    const optimizedFiles = ProjectUtils.optimizeProject({ files }).files;
+    const optimizedFiles = ProjectUtils.optimizeProject(tempProject).files;
 
     const project: Project = {
-      id: this.generateUUID(),
+      id: tempId,
       name: name.trim(),
       files: optimizedFiles,
       activeFileId: optimizedFiles[0]?.id || '',
       lastModified: Date.now(),
-      createdAt: Date.now(),
-      githubUrl: githubUrl,
+      structure: projectStructure,
       metadata: {
         description: '',
         tags: [],
-        version: '1.0.0',
-        githubUrl: githubUrl,
-        structure: projectStructure,
-        stats: projectStats,
-        issues: potentialIssues,
-        lastAnalyzed: Date.now()
+        version: '1.0.0'
       }
     };
 
@@ -66,8 +71,7 @@ export class ProjectService {
     // First try exact match
     const exactMatch = projects.find(p => {
       if (p.name.toLowerCase() === cleanName) return true;
-      const pRepo = p.metadata?.githubUrl ? extractRepoName(p.metadata.githubUrl) : '';
-      if (pRepo.toLowerCase() === cleanName) return true;
+      // Note: githubUrl is not in the Project type, check if it exists
       return false;
     });
 
@@ -88,8 +92,7 @@ export class ProjectService {
       name: 'test',
       files: files,
       activeFileId: files[0]?.id || '',
-      lastModified: Date.now(),
-      createdAt: Date.now()
+      lastModified: Date.now()
     };
 
     for (const project of projects) {
@@ -119,16 +122,7 @@ export class ProjectService {
     // Re-analyze project structure if files changed
     if (updates.files) {
       const projectStructure = ProjectUtils.analyzeProjectStructure(updatedProject.files);
-      const projectStats = ProjectUtils.generateProjectStats(updatedProject);
-      const potentialIssues = ProjectUtils.findPotentialIssues(updatedProject);
-
-      updatedProject.metadata = {
-        ...updatedProject.metadata,
-        structure: projectStructure,
-        stats: projectStats,
-        issues: potentialIssues,
-        lastAnalyzed: Date.now()
-      };
+      updatedProject.structure = projectStructure;
     }
 
     this.saveProjectToStorage(updatedProject);
@@ -147,7 +141,7 @@ export class ProjectService {
         name: project.name,
         id: projectId,
         files: project.files.length,
-        structure: project.metadata?.structure?.architecture
+        architecture: project.structure?.architecture
       });
 
       // Add archive metadata
@@ -245,14 +239,7 @@ export class ProjectService {
     const projectStructure = ProjectUtils.analyzeProjectStructure(mergedProject.files);
     const projectStats = ProjectUtils.generateProjectStats(mergedProject);
 
-    mergedProject.metadata = {
-      ...mergedProject.metadata,
-      structure: projectStructure,
-      stats: projectStats,
-      lastAnalyzed: Date.now(),
-      lastMerge: Date.now(),
-      mergeConflicts: conflicts.length
-    };
+    mergedProject.structure = projectStructure;
 
     this.saveProjectToStorage(mergedProject);
 
@@ -274,9 +261,9 @@ export class ProjectService {
       throw new Error(`Project ${projectId} not found`);
     }
 
-    const structure = project.metadata?.structure || ProjectUtils.analyzeProjectStructure(project.files);
-    const stats = project.metadata?.stats || ProjectUtils.generateProjectStats(project);
-    const issues = project.metadata?.issues || ProjectUtils.findPotentialIssues(project);
+    const structure = project.structure || ProjectUtils.analyzeProjectStructure(project.files);
+    const stats = ProjectUtils.generateProjectStats(project);
+    const issues = ProjectUtils.findPotentialIssues(project);
 
     // Calculate complexity
     let complexity: 'simple' | 'moderate' | 'complex' = 'simple';
@@ -336,14 +323,134 @@ export class ProjectService {
       project, 
       project.files, 
       {
-        structure: project.metadata?.structure,
-        stats: project.metadata?.stats,
+        structure: project.structure,
         insights
       }
     );
   }
 
-  // ... [Keep all other existing methods from previous version] ...
+  // Load project from storage (active or archived)
+  async loadProject(projectId: string, includeArchived: boolean = false): Promise<Project | null> {
+    // Try active projects first
+    const projects = this.getAllProjectsFromStorage();
+    const activeProject = projects.find(p => p.id === projectId);
+    
+    if (activeProject) {
+      return activeProject;
+    }
+
+    // If includeArchived, also check archived projects
+    if (includeArchived) {
+      const archives = this.getArchivedProjectsFromStorage();
+      const archivedProject = archives.find(p => p.id === projectId);
+      return archivedProject || null;
+    }
+
+    return null;
+  }
+
+  // Delete project permanently
+  async deleteProject(projectId: string): Promise<void> {
+    console.log('🗑️ Deleting project:', projectId);
+
+    // Remove from active projects
+    const projects = this.getAllProjectsFromStorage();
+    const updatedProjects = projects.filter(p => p.id !== projectId);
+    localStorage.setItem(this.PROJECTS_STORAGE_KEY, JSON.stringify(updatedProjects));
+
+    // Also remove from archives if it exists there
+    const archives = this.getArchivedProjectsFromStorage();
+    const updatedArchives = archives.filter(p => p.id !== projectId);
+    localStorage.setItem(this.ARCHIVES_STORAGE_KEY, JSON.stringify(updatedArchives));
+
+    console.log('✅ Project deleted successfully');
+  }
+
+  // Detect changes between two sets of files
+  async detectChanges(oldProject: Project, newFiles: ProjectFile[]): Promise<FileChange[]> {
+    const changes: FileChange[] = [];
+    const oldFilesMap = new Map(oldProject.files.map(f => [f.name, f]));
+    const newFilesMap = new Map(newFiles.map(f => [f.name, f]));
+
+    // Check for added and modified files
+    for (const newFile of newFiles) {
+      const oldFile = oldFilesMap.get(newFile.name);
+      
+      if (!oldFile) {
+        // New file added
+        changes.push({
+          type: 'added',
+          file: newFile,
+          previousContent: '',
+          currentContent: newFile.content
+        });
+      } else if (oldFile.content !== newFile.content) {
+        // File modified
+        changes.push({
+          type: 'modified',
+          file: newFile,
+          previousContent: oldFile.content,
+          currentContent: newFile.content
+        });
+      }
+    }
+
+    // Check for deleted files
+    for (const oldFile of oldProject.files) {
+      if (!newFilesMap.has(oldFile.name)) {
+        changes.push({
+          type: 'deleted',
+          file: oldFile,
+          previousContent: oldFile.content,
+          currentContent: ''
+        });
+      }
+    }
+
+    return changes;
+  }
+
+  // Get all projects (for listing)
+  getAllProjects(): Project[] {
+    return this.getAllProjectsFromStorage();
+  }
+
+  // Get archived projects
+  getArchivedProjects(): Project[] {
+    return this.getArchivedProjectsFromStorage();
+  }
+
+  // Restore project from archive
+  async restoreProject(projectId: string): Promise<void> {
+    const archives = this.getArchivedProjectsFromStorage();
+    const archivedProject = archives.find(p => p.id === projectId);
+
+    if (!archivedProject) {
+      throw new Error(`Archived project ${projectId} not found`);
+    }
+
+    // Remove archived metadata
+    const restoredProject = {
+      ...archivedProject,
+      lastModified: Date.now(),
+      metadata: {
+        ...archivedProject.metadata,
+        archived: false,
+        restoredAt: Date.now()
+      }
+    };
+
+    // Add back to active projects
+    const projects = this.getAllProjectsFromStorage();
+    projects.push(restoredProject);
+    localStorage.setItem(this.PROJECTS_STORAGE_KEY, JSON.stringify(projects));
+
+    // Remove from archives
+    const updatedArchives = archives.filter(p => p.id !== projectId);
+    localStorage.setItem(this.ARCHIVES_STORAGE_KEY, JSON.stringify(updatedArchives));
+
+    console.log('✅ Project restored successfully:', restoredProject.name);
+  }
 
   // Private helper methods (unchanged)
   private saveProjectToStorage(project: Project): void {
