@@ -1,6 +1,6 @@
 import { Project, ProjectFile, CodeLanguage } from '../types';
 import JSZip from 'jszip';
-import { ProjectUtils } from './projectUtils';
+import { ProjectUtils } from '../utils/projectUtils';
 
 const GITHUB_API_BASE = 'https://api.github.com';
 
