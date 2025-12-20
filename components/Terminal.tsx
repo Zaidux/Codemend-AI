@@ -86,26 +86,9 @@ export const Terminal = forwardRef<TerminalHandle, TerminalProps>(({
     }
   ];
 
+  // Terminal now only accessible from top bar icon
   if (!state.isOpen) {
-    return (
-      <div className={`fixed bottom-4 right-4 z-50 ${className}`}>
-        <button
-          onClick={() => openTerminal('Terminal ready. Type "help" for available commands.')}
-          className={`
-            flex items-center gap-2 px-4 py-3 rounded-lg shadow-lg border transition-all
-            hover:scale-105 active:scale-95
-            ${theme.bgPanelHeader} ${theme.border} ${theme.textMain}
-            hover:${theme.bgHover}
-          `}
-        >
-          <TerminalIcon className="w-5 h-5" />
-          <span className="font-medium">Open Terminal</span>
-          {hasErrors && (
-            <span className="w-2 h-2 bg-red-500 rounded-full animate-pulse"></span>
-          )}
-        </button>
-      </div>
-    );
+    return null;
   }
 
   return (

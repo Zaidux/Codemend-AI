@@ -47,6 +47,7 @@ const WebPreview: React.FC<WebPreviewProps> = ({ files, theme }) => {
   const [debouncedFiles, setDebouncedFiles] = React.useState<ProjectFile[]>([]);
   const [isDebouncing, setIsDebouncing] = React.useState(false);
   const [runtimeError, setRuntimeError] = React.useState<string | null>(null);
+  const [showSourceCode, setShowSourceCode] = React.useState(false);
 
   // 1. Debounce Files to prevent Infinite Loops and flashing
   React.useEffect(() => {
@@ -351,14 +352,54 @@ const WebPreview: React.FC<WebPreviewProps> = ({ files, theme }) => {
             )}
             <button onClick={() => setActiveView('code')} className={`px-3 py-1 text-xs font-medium rounded-md ${activeView === 'code' ? 'bg-white shadow text-gray-800' : 'text-gray-500'}`}>Source</button>
           </div>
-          <button onClick={handleRefresh} className="p-1.5 rounded-md hover:bg-gray-100 text-gray-600">
-            <RefreshCw className="w-4 h-4" />
-          </button>
+          <div className="flex items-center gap-1">
+            <button 
+              onClick={() => setShowSourceCode(!showSourceCode)} 
+              className={`px-3 py-1 text-xs font-medium rounded-md ${showSourceCode ? 'bg-blue-500 text-white' : 'bg-gray-100 text-gray-700 hover:bg-gray-200'}`}
+              title="View Generated HTML (Debug)"
+            >
+              {showSourceCode ? 'Hide HTML' : 'View HTML'}
+            </button>
+            <button onClick={handleRefresh} className="p-1.5 rounded-md hover:bg-gray-100 text-gray-600">
+              <RefreshCw className="w-4 h-4" />
+            </button>
+          </div>
         </div>
       </div>
 
       {/* --- Main Content --- */}
       <div className="flex-grow relative bg-gray-200 overflow-hidden flex flex-col items-center">
+        
+        {/* Debug Source Code Viewer */}
+        {showSourceCode && (
+          <div className="absolute inset-0 z-40 bg-black/90 backdrop-blur-sm p-4 overflow-auto">
+            <div className="max-w-6xl mx-auto">
+              <div className="flex items-center justify-between mb-4">
+                <h3 className="text-white font-bold text-lg">Generated HTML Source (Debug)</h3>
+                <button 
+                  onClick={() => setShowSourceCode(false)}
+                  className="px-3 py-1 bg-white/10 hover:bg-white/20 text-white rounded"
+                >
+                  Close
+                </button>
+              </div>
+              <div className="bg-gray-900 rounded-lg p-4 overflow-auto">
+                <pre className="text-xs text-green-400 font-mono whitespace-pre-wrap">{getSrcDoc()}</pre>
+              </div>
+              <div className="mt-4 p-3 bg-blue-900/50 rounded text-blue-200 text-sm">
+                <strong>💡 Debug Tips:</strong>
+                <ul className="list-disc list-inside mt-2 space-y-1">
+                  <li>Check if your component is properly exported</li>
+                  <li>Verify React imports are being stripped correctly</li>
+                  <li>Look for syntax errors in the transformed code</li>
+                  <li>Check browser console (F12) for runtime errors</li>
+                  <li>Ensure components are assigned to window object</li>
+                </ul>
+              </div>
+            </div>
+          </div>
+        )}
+        
         {activeView === 'preview' && (
           <div className={`transition-all duration-300 relative bg-white shadow-xl my-4 ${deviceMode === 'mobile' ? 'w-[375px] h-[667px] rounded-3xl border-8 border-gray-800' : 'w-full h-full'}`}>
             
