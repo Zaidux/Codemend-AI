@@ -191,10 +191,17 @@ const WebPreview: React.FC<WebPreviewProps> = ({ files, theme }) => {
     const scripts = jsFiles.map(f => {
       let content = f.content || '';
       
-      // 1. Remove imports (We are using Global UMD React)
-      // This is a simple regex to strip standard imports so Babel doesn't choke on "require"
-      content = content.replace(/import\s+.*from\s+['"].*['"];?/g, '// import removed for preview');
-      content = content.replace(/export\s+default/g, '// export default');
+      // 1. Remove imports and handle exports
+      content = content.replace(/import\s+.*from\s+['"].*['"];?/g, '');
+      
+      // 2. Convert "export default" to global assignment
+      const componentName = f.name.replace(/\.(jsx?|tsx?)$/, '').replace(/[^a-zA-Z0-9]/g, '_');
+      content = content.replace(/export\s+default\s+function\s+(\w+)/g, 'window.$1 = function $1');
+      content = content.replace(/export\s+default\s+(\w+)/g, 'window.$1 = $1');
+      content = content.replace(/export\s+default/g, `window.${componentName} =`);
+      
+      // 3. Also expose function declarations as window properties
+      content = content.replace(/^(function|const|let|var)\s+(\w+)\s*=/gm, 'window.$2 = $2; $1 $2 =');
       
       return `
         <script type="text/babel" data-presets="env,react,typescript">
@@ -258,14 +265,44 @@ const WebPreview: React.FC<WebPreviewProps> = ({ files, theme }) => {
         <!-- 7. Auto-Mount Helper -->
         <script type="text/babel" data-presets="env,react">
           setTimeout(() => {
-            // Check if user mounted something. If not, and there is an App component, mount it.
             const root = document.getElementById('root');
-            if (root && root.innerHTML.trim() === '' && typeof App !== 'undefined') {
-               console.log('🚀 Auto-mounting App component...');
-               const rootInstance = ReactDOM.createRoot(root);
-               rootInstance.render(<App />);
+            if (root && root.innerHTML.trim() === '') {
+              // Try to find a component to mount (App, Main, Index, or any React component)
+              const candidates = ['App', 'Main', 'Index', 'Component'];
+              let ComponentToMount = null;
+              
+              for (const name of candidates) {
+                if (typeof window[name] !== 'undefined') {
+                  ComponentToMount = window[name];
+                  console.log('🚀 Auto-mounting', name, 'component...');
+                  break;
+                }
+              }
+              
+              // If no named component found, check window for any React components
+              if (!ComponentToMount) {
+                for (const key in window) {
+                  if (typeof window[key] === 'function' && key.match(/^[A-Z]/) && !key.startsWith('React')) {
+                    ComponentToMount = window[key];
+                    console.log('🚀 Auto-mounting detected component:', key);
+                    break;
+                  }
+                }
+              }
+              
+              if (ComponentToMount) {
+                try {
+                  const rootInstance = ReactDOM.createRoot(root);
+                  rootInstance.render(React.createElement(ComponentToMount));
+                } catch(e) {
+                  console.error('Failed to mount component:', e);
+                  root.innerHTML = '<div class="preview-error">Failed to mount component: ' + e.message + '</div>';
+                }
+              } else {
+                console.warn('⚠️ No React component found to auto-mount');
+              }
             }
-          }, 500);
+          }, 800);
         </script>
       </body>
       </html>

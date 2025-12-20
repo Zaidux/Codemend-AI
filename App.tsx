@@ -362,6 +362,29 @@ const App: React.FC = () => {
     setIsProcessComplete(true);
   };
 
+  // Generate AI-powered session title
+  const generateSessionTitle = async (firstMessage: string) => {
+    try {
+      const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${llmConfig.gemini?.apiKey}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          contents: [{
+            parts: [{ text: `Generate a concise 3-5 word title for this conversation:\n\n"${firstMessage.slice(0, 200)}"\n\nRespond ONLY with the title, no quotes or extra text.` }]
+          }]
+        })
+      });
+      
+      if (response.ok) {
+        const data = await response.json();
+        const title = data.candidates?.[0]?.content?.parts?.[0]?.text?.trim() || firstMessage.slice(0, 30);
+        updateSession({ title: title.replace(/^["']|["']$/g, '') });
+      }
+    } catch (e) {
+      console.warn('Failed to generate AI title:', e);
+    }
+  };
+
   // --- LLM HANDLING ---
 
   const handleSendMessage = async () => {
@@ -379,12 +402,17 @@ const App: React.FC = () => {
     const newMessages = [...activeSession.messages, userMsg];
     updateSession({ 
       messages: newMessages,
-      title: activeSession.messages.length === 0 ? (promptText ? promptText.slice(0, 30) : 'Multimodal Chat') : activeSession.title 
+      title: activeSession.messages.length === 0 ? 'New Chat...' : activeSession.title 
     });
 
     setInputInstruction('');
     setAttachments([]);
     triggerAIResponse(newMessages);
+    
+    // Generate AI title for first message in background
+    if (activeSession.messages.length === 0 && promptText) {
+      generateSessionTitle(promptText);
+    }
   };
 
   // New function to handle both new messages and retries

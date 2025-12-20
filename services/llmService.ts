@@ -974,10 +974,10 @@ export const fixCodeWithGemini = async (request: FixRequest): Promise<FixRespons
             console.log(`🔧 Retrying ${fc.name} with fixed parameters:`, retryResult.fixedArgs);
             const retryExecution = executeToolAction(fc.name, retryResult.fixedArgs, safeAllFiles, logger, knowledgeManager);
             if (!retryExecution.output.startsWith('Error:')) {
-              output = `✅ Auto-fixed parameters and succeeded:\n${retryExecution.output}`;
+              output = `✅ Auto-fixed parameters:\n${retryExecution.output}`;
               change = retryExecution.change;
             } else {
-              output = `❌ Retry failed. Original error: ${output}\n\nSuggestion: ${retryResult.suggestion}`;
+              output = `❌ Retry failed. ${output}\n\nSuggestion: ${retryResult.suggestion}`;
             }
           }
         }

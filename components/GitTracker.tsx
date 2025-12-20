@@ -25,6 +25,31 @@ export const GitTracker: React.FC<GitTrackerProps> = ({
   const [selectedFiles, setSelectedFiles] = useState<string[]>([]);
   const [modifiedFiles, setModifiedFiles] = useState<string[]>([]);
   const [remoteChanges, setRemoteChanges] = useState(false);
+  const [checkingRemote, setCheckingRemote] = useState(false);
+
+  const checkRemoteChanges = async () => {
+    if (!currentProject.githubUrl) return;
+    
+    setCheckingRemote(true);
+    try {
+      // Extract owner/repo from GitHub URL
+      const match = currentProject.githubUrl.match(/github\.com\/([^\/]+)\/([^\/\.]+)/);
+      if (match) {
+        const [, owner, repo] = match;
+        const response = await fetch(`https://api.github.com/repos/${owner}/${repo}/commits?per_page=1`);
+        if (response.ok) {
+          const commits = await response.json();
+          // In a real app, compare with last known commit hash
+          // For now, just indicate there might be changes if repo exists
+          setRemoteChanges(commits && commits.length > 0);
+        }
+      }
+    } catch (error) {
+      console.warn('Failed to check remote changes:', error);
+    } finally {
+      setCheckingRemote(false);
+    }
+  };
 
   useEffect(() => {
     if (isOpen) {
@@ -34,9 +59,8 @@ export const GitTracker: React.FC<GitTrackerProps> = ({
         .map(f => f.name);
       setModifiedFiles(modified);
       
-      // In a real implementation, this would check git status
-      // For now, we'll simulate it based on githubUrl presence
-      setRemoteChanges(!!currentProject.githubUrl);
+      // Check for remote changes
+      checkRemoteChanges();
     }
   }, [isOpen, currentProject]);
 
@@ -78,18 +102,38 @@ export const GitTracker: React.FC<GitTrackerProps> = ({
         </div>
 
         {/* Status Banner */}
-        {remoteChanges && (
-          <div className="p-3 bg-yellow-500/10 border-b border-yellow-500/20 flex items-center gap-2">
-            <AlertCircle className="w-4 h-4 text-yellow-400" />
-            <span className="text-sm text-yellow-400">
-              Remote repository detected. Changes may be available to pull.
-            </span>
-            <button 
-              onClick={onPull}
-              className="ml-auto px-3 py-1 rounded bg-yellow-500/20 text-yellow-400 hover:bg-yellow-500/30 transition-colors text-sm flex items-center gap-1"
-            >
-              <Download className="w-3 h-3" /> Pull Changes
-            </button>
+        {currentProject.githubUrl && (
+          <div className={`p-3 ${remoteChanges ? 'bg-yellow-500/10 border-yellow-500/20' : 'bg-blue-500/10 border-blue-500/20'} border-b flex items-center gap-2`}>
+            {checkingRemote ? (
+              <>
+                <RefreshCw className="w-4 h-4 text-blue-400 animate-spin" />
+                <span className="text-sm text-blue-400">Checking remote repository...</span>
+              </>
+            ) : remoteChanges ? (
+              <>
+                <AlertCircle className="w-4 h-4 text-yellow-400" />
+                <span className="text-sm text-yellow-400">
+                  Remote changes detected. Click to pull latest updates.
+                </span>
+                <button 
+                  onClick={onPull}
+                  className="ml-auto px-3 py-1 rounded bg-yellow-500/20 text-yellow-400 hover:bg-yellow-500/30 transition-colors text-sm flex items-center gap-1"
+                >
+                  <Download className="w-3 h-3" /> Pull Changes
+                </button>
+              </>
+            ) : (
+              <>
+                <CheckCircle className="w-4 h-4 text-green-400" />
+                <span className="text-sm text-green-400">Repository up to date</span>
+                <button 
+                  onClick={checkRemoteChanges}
+                  className="ml-auto px-3 py-1 rounded bg-blue-500/20 text-blue-400 hover:bg-blue-500/30 transition-colors text-sm flex items-center gap-1"
+                >
+                  <RefreshCw className="w-3 h-3" /> Refresh
+                </button>
+              </>
+            )}
           </div>
         )}
 

@@ -78,7 +78,9 @@ const AppSidebar: React.FC<AppSidebarProps> = (props) => {
   const [isImporting, setIsImporting] = useState(false);
   const [projectMenuOpen, setProjectMenuOpen] = useState<string | null>(null);
   const [editingProjectId, setEditingProjectId] = useState<string | null>(null);
-  const [editedProjectName, setEditedProjectName] = useState('');
+  const [editingSessionId, setEditingSessionId] = useState<string | null>(null);
+  const [editingProjectName, setEditingProjectName] = useState('');
+  const [editingSessionName, setEditingSessionName] = useState('');
 
   // FIX: Safe project state updater
   const updateProjectsState = (updatedProjects: Project[]) => {
@@ -565,9 +567,53 @@ const AppSidebar: React.FC<AppSidebarProps> = (props) => {
                  </div>
 
                  {projectSessions.map(session => (
-                    <div key={session.id} onClick={() => { props.setCurrentSessionId(session.id); if (window.innerWidth < 1024) props.setIsSidebarOpen(false); }} className={`flex justify-between p-2 rounded cursor-pointer text-sm ${props.currentSessionId === session.id ? `${theme.bgApp} border border-${theme.border.replace('border-', '')} ${theme.textMain}` : `hover:bg-white/5 ${theme.textMuted}`}`}>
-                       <span className="truncate">{session.title}</span>
-                       <button onClick={(e) => { e.stopPropagation(); props.setSessions(props.sessions.filter(s => s.id !== session.id)); }} className="opacity-0 hover:opacity-100"><Trash2 className="w-3 h-3 text-red-500"/></button>
+                    <div key={session.id} className={`group flex items-center gap-2 p-2 rounded cursor-pointer text-sm ${props.currentSessionId === session.id ? `${theme.bgApp} border border-${theme.border.replace('border-', '')} ${theme.textMain}` : `hover:bg-white/5 ${theme.textMuted}`}`}>
+                       {editingSessionId === session.id ? (
+                         <input 
+                           type="text" 
+                           value={editingSessionName} 
+                           onChange={(e) => setEditingSessionName(e.target.value)} 
+                           onBlur={() => {
+                             if (editingSessionName.trim()) {
+                               props.setSessions(props.sessions.map(s => s.id === session.id ? {...s, title: editingSessionName.trim()} : s));
+                             }
+                             setEditingSessionId(null);
+                           }}
+                           onKeyDown={(e) => {
+                             if (e.key === 'Enter') {
+                               if (editingSessionName.trim()) {
+                                 props.setSessions(props.sessions.map(s => s.id === session.id ? {...s, title: editingSessionName.trim()} : s));
+                               }
+                               setEditingSessionId(null);
+                             } else if (e.key === 'Escape') {
+                               setEditingSessionId(null);
+                             }
+                           }}
+                           autoFocus
+                           className="flex-1 bg-white/10 px-2 py-1 rounded text-xs"
+                           onClick={(e) => e.stopPropagation()}
+                         />
+                       ) : (
+                         <>
+                           <span className="truncate flex-1" onClick={() => { props.setCurrentSessionId(session.id); if (window.innerWidth < 1024) props.setIsSidebarOpen(false); }}>{session.title}</span>
+                           <div className="flex gap-1 opacity-0 group-hover:opacity-100">
+                             <button 
+                               onClick={(e) => { 
+                                 e.stopPropagation(); 
+                                 setEditingSessionId(session.id);
+                                 setEditingSessionName(session.title);
+                               }} 
+                               className="hover:text-blue-400"
+                               title="Rename session"
+                             >
+                               <Edit3 className="w-3 h-3"/>
+                             </button>
+                             <button onClick={(e) => { e.stopPropagation(); props.setSessions(props.sessions.filter(s => s.id !== session.id)); }} className="hover:text-red-400" title="Delete session">
+                               <Trash2 className="w-3 h-3"/>
+                             </button>
+                           </div>
+                         </>
+                       )}
                     </div>
                  ))}
              </div>
