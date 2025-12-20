@@ -17,8 +17,10 @@ import { GitTracker } from './components/GitTracker';
 import { CommandPalette } from './components/CommandPalette'; 
 import { SnippetsLibrary } from './components/SnippetsLibrary';
 import { GitHubAuthModal } from './components/GitHubAuthModal'; 
+import { MultiDiffViewer } from './components/MultiDiffViewer';
 
 import { THEMES, DEFAULT_LLM_CONFIG, DEFAULT_ROLES } from './constants';
+import { GitHubService, parseGitHubUrl, GitHubFile } from './services/githubApiService';
 import { CodeLanguage, AppMode, ThemeType, Session, ChatMessage, ViewMode, ProjectFile, LLMConfig, Project, Attachment, AgentRole, KnowledgeEntry, TodoItem, FileDiff, ProjectSummary } from './types';
 import { fixCodeWithGemini, streamFixCodeWithGemini } from './services/llmService';
 import { fetchRepoContents } from './services/githubService';
@@ -83,6 +85,8 @@ const App: React.FC = () => {
   const [showCommandPalette, setShowCommandPalette] = useState(false);
   const [showSnippets, setShowSnippets] = useState(false);
   const [showGitHubAuth, setShowGitHubAuth] = useState(false);
+  const [showMultiDiff, setShowMultiDiff] = useState(false);
+  const [multiDiffChanges, setMultiDiffChanges] = useState<FileDiff[]>([]);
   const [repoInput, setRepoInput] = useState('');
   const [leftPanelTab, setLeftPanelTab] = useState<'code' | 'preview' | 'todos'>('code');
   const [activeTab, setActiveTab] = useState<'chats' | 'files' | 'knowledge'>('chats');
@@ -408,6 +412,23 @@ const App: React.FC = () => {
     }
   };
 
+  // --- HELPER FUNCTIONS ---
+
+  const getLanguageFromExtension = (ext: string): CodeLanguage => {
+    const extMap: Record<string, CodeLanguage> = {
+      'js': CodeLanguage.JAVASCRIPT,
+      'jsx': CodeLanguage.JAVASCRIPT,
+      'ts': CodeLanguage.TYPESCRIPT,
+      'tsx': CodeLanguage.TYPESCRIPT,
+      'py': CodeLanguage.PYTHON,
+      'html': CodeLanguage.HTML,
+      'css': CodeLanguage.CSS,
+      'json': CodeLanguage.JSON,
+      'md': CodeLanguage.MARKDOWN,
+    };
+    return extMap[ext.toLowerCase()] || CodeLanguage.JAVASCRIPT;
+  };
+
   // --- LLM HANDLING ---
 
   const handleSendMessage = async () => {
@@ -509,7 +530,16 @@ const App: React.FC = () => {
             });
         },
         onToolCalls: (toolCalls) => processToolCalls(toolCalls),
-        onProposedChanges: (changes) => setPendingDiffs(prev => [...prev, ...changes]),
+        onProposedChanges: (changes) => {
+          if (changes.length > 1) {
+            // Multiple changes - use MultiDiffViewer
+            setMultiDiffChanges(changes);
+            setShowMultiDiff(true);
+          } else {
+            // Single change - use existing single diff overlay
+            setPendingDiffs(prev => [...prev, ...changes]);
+          }
+        },
         onComplete: (fullResponse) => {
           setIsProcessComplete(true);
           const aiMsg: ChatMessage = {
@@ -563,7 +593,14 @@ const App: React.FC = () => {
 
   const processAIResponse = (response: any, history: ChatMessage[]) => {
     if (response.toolCalls) processToolCalls(response.toolCalls);
-    if (response.proposedChanges) setPendingDiffs(prev => [...prev, ...response.proposedChanges!]);
+    if (response.proposedChanges) {
+      if (response.proposedChanges.length > 1) {
+        setMultiDiffChanges(response.proposedChanges);
+        setShowMultiDiff(true);
+      } else {
+        setPendingDiffs(prev => [...prev, ...response.proposedChanges!]);
+      }
+    }
     const aiMsg: ChatMessage = { id: crypto.randomUUID(), role: 'model', content: response.response, timestamp: Date.now() };
     updateSession({ messages: [...history, aiMsg] });
   };
@@ -974,21 +1011,87 @@ const App: React.FC = () => {
           })));
           setShowGitTracker(false);
         }}
-        onPush={() => {
-          if (activeProject.githubUrl) {
-            alert('Push functionality requires GitHub integration. Configure your GitHub token in Settings.');
-          } else {
+        onPush={async (files) => {
+          const gitHubService = GitHubService.getInstance();
+          
+          if (!gitHubService.isAuthenticated()) {
+            alert('Please connect your GitHub account first (click the GitHub icon in the header)');
+            return;
+          }
+
+          if (!activeProject.githubUrl) {
             alert('No remote repository configured. Import from GitHub or add a remote URL.');
+            return;
           }
-          setShowGitTracker(false);
+
+          const parsed = parseGitHubUrl(activeProject.githubUrl);
+          if (!parsed) {
+            alert('Invalid GitHub URL');
+            return;
+          }
+
+          try {
+            const gitHubFiles: GitHubFile[] = files.map(f => ({
+              path: f.name,
+              content: f.content
+            }));
+
+            await gitHubService.pushMultipleFiles(
+              parsed.owner,
+              parsed.repo,
+              gitHubFiles,
+              'Update files from Codemend AI',
+              'main'
+            );
+            alert(`Successfully pushed ${files.length} file(s) to GitHub!`);
+            setShowGitTracker(false);
+          } catch (error: any) {
+            console.error('Push failed:', error);
+            alert(`Failed to push: ${error.message || 'Unknown error'}`);
+          }
         }}
-        onPull={() => {
-          if (activeProject.githubUrl) {
-            alert('Pull functionality requires GitHub integration. This will fetch latest changes from the remote.');
-          } else {
-            alert('No remote repository configured.');
+        onPull={async (files) => {
+          const gitHubService = GitHubService.getInstance();
+          
+          if (!gitHubService.isAuthenticated()) {
+            alert('Please connect your GitHub account first');
+            return;
           }
-          setShowGitTracker(false);
+
+          if (!activeProject.githubUrl) {
+            alert('No remote repository configured.');
+            return;
+          }
+
+          const parsed = parseGitHubUrl(activeProject.githubUrl);
+          if (!parsed) {
+            alert('Invalid GitHub URL');
+            return;
+          }
+
+          try {
+            const remoteFiles = await gitHubService.pullChanges(parsed.owner, parsed.repo);
+            
+            // Update project files
+            const updatedFiles = remoteFiles.map((rf: any) => ({
+              id: activeProject.files.find(f => f.name === rf.path)?.id || crypto.randomUUID(),
+              name: rf.path,
+              content: rf.content,
+              language: getLanguageFromExtension(rf.path.split('.').pop() || '')
+            }));
+
+            setProjects(projects.map(p => 
+              p.id === activeProject.id 
+                ? { ...p, files: updatedFiles, lastModified: Date.now() }
+                : p
+            ));
+
+            alert(`Successfully pulled ${updatedFiles.length} file(s) from GitHub!`);
+            setShowGitTracker(false);
+          } catch (error: any) {
+            console.error('Pull failed:', error);
+            alert(`Failed to pull: ${error.message || 'Unknown error'}`);
+          }
         }}
       />
 
@@ -1020,6 +1123,42 @@ const App: React.FC = () => {
         onClose={() => setShowGitHubAuth(false)}
         theme={theme}
       />
+
+      {/* Multi Diff Viewer */}
+      {showMultiDiff && multiDiffChanges.length > 0 && (
+        <MultiDiffViewer
+          changes={multiDiffChanges}
+          theme={theme}
+          onClose={() => setShowMultiDiff(false)}
+          onApprove={(changeId) => {
+            const change = multiDiffChanges.find(c => c.id === changeId);
+            if (change) handleApplyDiff(change);
+            setMultiDiffChanges(prev => prev.filter(c => c.id !== changeId));
+            if (multiDiffChanges.length === 1) {
+              setShowMultiDiff(false);
+            }
+          }}
+          onReject={(changeId) => {
+            setMultiDiffChanges(prev => prev.filter(c => c.id !== changeId));
+            if (multiDiffChanges.length === 1) {
+              setShowMultiDiff(false);
+            }
+          }}
+          onApproveAll={() => {
+            multiDiffChanges.forEach(change => handleApplyDiff(change));
+            setMultiDiffChanges([]);
+            setShowMultiDiff(false);
+          }}
+          onRejectAll={() => {
+            setMultiDiffChanges([]);
+            setShowMultiDiff(false);
+          }}
+          onSaveForLater={(changesToSave) => {
+            // Save all pending changes for later
+            setShowMultiDiff(false);
+          }}
+        />
+      )}
     </div>
   );
 };

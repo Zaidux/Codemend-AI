@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react';
-import { X, GitBranch, GitCommit, Upload, Download, CheckCircle, AlertCircle, RefreshCw } from 'lucide-react';
-import { Project } from '../types';
+import { X, GitBranch, GitCommit, Upload, Download, CheckCircle, AlertCircle, RefreshCw, Loader2, CheckCheck } from 'lucide-react';
+import { Project, ProjectFile, CodeLanguage } from '../types';
+import { GitHubService, parseGitHubUrl } from '../services/githubApiService';
 
 interface GitTrackerProps {
   isOpen: boolean;
@@ -8,8 +9,8 @@ interface GitTrackerProps {
   theme: any;
   currentProject: Project;
   onCommit: (message: string, files: string[]) => void;
-  onPush: () => void;
-  onPull: () => void;
+  onPush: (files: ProjectFile[]) => Promise<void>;
+  onPull: (files: ProjectFile[]) => Promise<void>;
 }
 
 export const GitTracker: React.FC<GitTrackerProps> = ({ 
@@ -26,29 +27,128 @@ export const GitTracker: React.FC<GitTrackerProps> = ({
   const [modifiedFiles, setModifiedFiles] = useState<string[]>([]);
   const [remoteChanges, setRemoteChanges] = useState(false);
   const [checkingRemote, setCheckingRemote] = useState(false);
+  const [pushing, setPushing] = useState(false);
+  const [pulling, setPulling] = useState(false);
+  const [gitHubService] = useState(() => GitHubService.getInstance());
+  const [isAuthenticated, setIsAuthenticated] = useState(false);
+  const [commitCount, setCommitCount] = useState(0);
+
+  useEffect(() => {
+    setIsAuthenticated(gitHubService.isAuthenticated());
+  }, [gitHubService]);
 
   const checkRemoteChanges = async () => {
-    if (!currentProject.githubUrl) return;
+    if (!currentProject.githubUrl || !isAuthenticated) return;
     
     setCheckingRemote(true);
     try {
-      // Extract owner/repo from GitHub URL
-      const match = currentProject.githubUrl.match(/github\.com\/([^\/]+)\/([^\/\.]+)/);
-      if (match) {
-        const [, owner, repo] = match;
-        const response = await fetch(`https://api.github.com/repos/${owner}/${repo}/commits?per_page=1`);
-        if (response.ok) {
-          const commits = await response.json();
-          // In a real app, compare with last known commit hash
-          // For now, just indicate there might be changes if repo exists
-          setRemoteChanges(commits && commits.length > 0);
-        }
+      const parsed = parseGitHubUrl(currentProject.githubUrl);
+      if (parsed) {
+        const commits = await gitHubService.getCommits(parsed.owner, parsed.repo, 'main', 5);
+        setCommitCount(commits.length);
+        
+        // Compare with local files to detect if remote is ahead
+        // In a real implementation, you'd compare commit SHAs
+        setRemoteChanges(commits.length > 0);
       }
     } catch (error) {
       console.warn('Failed to check remote changes:', error);
+      setRemoteChanges(false);
     } finally {
       setCheckingRemote(false);
     }
+  };
+
+  const handlePush = async () => {
+    if (!isAuthenticated) {
+      alert('Please connect your GitHub account first (click the GitHub icon in the header)');
+      return;
+    }
+
+    if (selectedFiles.length === 0) {
+      alert('Please select files to push');
+      return;
+    }
+
+    const parsed = parseGitHubUrl(currentProject.githubUrl || '');
+    if (!parsed) {
+      alert('Invalid GitHub URL');
+      return;
+    }
+
+    setPushing(true);
+    try {
+      const filesToPush = currentProject.files.filter(f => 
+        selectedFiles.includes(f.name)
+      );
+
+      await onPush(filesToPush);
+      
+      setSelectedFiles([]);
+      setCommitMessage('');
+      alert(`Successfully pushed ${filesToPush.length} file(s) to GitHub!`);
+      
+      // Refresh remote status
+      await checkRemoteChanges();
+    } catch (error: any) {
+      console.error('Push failed:', error);
+      alert(`Failed to push: ${error.message}`);
+    } finally {
+      setPushing(false);
+    }
+  };
+
+  const handlePull = async () => {
+    if (!isAuthenticated) {
+      alert('Please connect your GitHub account first');
+      return;
+    }
+
+    const parsed = parseGitHubUrl(currentProject.githubUrl || '');
+    if (!parsed) {
+      alert('Invalid GitHub URL');
+      return;
+    }
+
+    setPulling(true);
+    try {
+      const remoteFiles = await gitHubService.pullChanges(parsed.owner, parsed.repo);
+      
+      // Convert to ProjectFile format
+      const projectFiles: ProjectFile[] = remoteFiles.map((rf: any) => ({
+        id: rf.path,
+        name: rf.path,
+        content: rf.content,
+        language: getLanguageFromPath(rf.path)
+      }));
+
+      await onPull(projectFiles);
+      
+      alert(`Successfully pulled ${projectFiles.length} file(s) from GitHub!`);
+      setRemoteChanges(false);
+    } catch (error: any) {
+      console.error('Pull failed:', error);
+      alert(`Failed to pull: ${error.message}`);
+    } finally {
+      setPulling(false);
+    }
+  };
+
+  // Helper to determine language from file path
+  const getLanguageFromPath = (path: string): CodeLanguage => {
+    const ext = path.split('.').pop()?.toLowerCase();
+    const langMap: Record<string, CodeLanguage> = {
+      'ts': CodeLanguage.TYPESCRIPT,
+      'tsx': CodeLanguage.TYPESCRIPT,
+      'js': CodeLanguage.JAVASCRIPT,
+      'jsx': CodeLanguage.JAVASCRIPT,
+      'py': CodeLanguage.PYTHON,
+      'html': CodeLanguage.HTML,
+      'css': CodeLanguage.CSS,
+      'json': CodeLanguage.JSON,
+      'md': CodeLanguage.MARKDOWN
+    };
+    return langMap[ext || ''] || CodeLanguage.JAVASCRIPT;
   };
 
   useEffect(() => {
@@ -116,10 +216,11 @@ export const GitTracker: React.FC<GitTrackerProps> = ({
                   Remote changes detected. Click to pull latest updates.
                 </span>
                 <button 
-                  onClick={onPull}
-                  className="ml-auto px-3 py-1 rounded bg-yellow-500/20 text-yellow-400 hover:bg-yellow-500/30 transition-colors text-sm flex items-center gap-1"
+                  onClick={handlePull}
+                  disabled={pulling}
+                  className="ml-auto px-3 py-1 rounded bg-yellow-500/20 text-yellow-400 hover:bg-yellow-500/30 transition-colors text-sm flex items-center gap-1 disabled:opacity-50"
                 >
-                  <Download className="w-3 h-3" /> Pull Changes
+                  <Download className="w-3 h-3" /> {pulling ? 'Pulling...' : 'Pull Changes'}
                 </button>
               </>
             ) : (
@@ -214,11 +315,12 @@ export const GitTracker: React.FC<GitTrackerProps> = ({
                 </button>
                 {currentProject.githubUrl && (
                   <button
-                    onClick={onPush}
-                    className="px-4 py-2 rounded-lg text-sm flex items-center gap-2 bg-green-500/20 text-green-400 border border-green-500/30 hover:bg-green-500/30 transition-colors"
+                    onClick={handlePush}
+                    disabled={pushing || selectedFiles.length === 0}
+                    className="px-4 py-2 rounded-lg text-sm flex items-center gap-2 bg-green-500/20 text-green-400 border border-green-500/30 hover:bg-green-500/30 transition-colors disabled:opacity-50"
                   >
                     <Upload className="w-4 h-4" />
-                    Push
+                    {pushing ? 'Pushing...' : 'Push'}
                   </button>
                 )}
               </div>
