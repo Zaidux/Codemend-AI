@@ -15,7 +15,8 @@ import Terminal from './components/Terminal';
 import { ToolsManagementModal } from './components/ToolsManagementModal';
 import { GitTracker } from './components/GitTracker'; 
 import { CommandPalette } from './components/CommandPalette'; 
-import { SnippetsLibrary } from './components/SnippetsLibrary'; 
+import { SnippetsLibrary } from './components/SnippetsLibrary';
+import { GitHubAuthModal } from './components/GitHubAuthModal'; 
 
 import { THEMES, DEFAULT_LLM_CONFIG, DEFAULT_ROLES } from './constants';
 import { CodeLanguage, AppMode, ThemeType, Session, ChatMessage, ViewMode, ProjectFile, LLMConfig, Project, Attachment, AgentRole, KnowledgeEntry, TodoItem, FileDiff, ProjectSummary } from './types';
@@ -81,6 +82,7 @@ const App: React.FC = () => {
   const [showGitTracker, setShowGitTracker] = useState(false);
   const [showCommandPalette, setShowCommandPalette] = useState(false);
   const [showSnippets, setShowSnippets] = useState(false);
+  const [showGitHubAuth, setShowGitHubAuth] = useState(false);
   const [repoInput, setRepoInput] = useState('');
   const [leftPanelTab, setLeftPanelTab] = useState<'code' | 'preview' | 'todos'>('code');
   const [activeTab, setActiveTab] = useState<'chats' | 'files' | 'knowledge'>('chats');
@@ -623,7 +625,13 @@ const App: React.FC = () => {
       )}
 
       <div className="flex-grow flex flex-col min-w-0 h-full relative">
-        <Header theme={theme} viewMode={viewMode} onOpenSettings={() => setShowSettings(true)} />
+        <Header 
+          theme={theme} 
+          viewMode={viewMode} 
+          onOpenSettings={() => setShowSettings(true)}
+          onOpenGitHubAuth={() => setShowGitHubAuth(true)}
+          isGitHubConnected={!!localStorage.getItem('gh_token')}
+        />
 
         <div className="flex-grow flex flex-col lg:flex-row overflow-hidden relative">
           {/* EDITOR / PREVIEW PANEL */}
@@ -1004,6 +1012,13 @@ const App: React.FC = () => {
         onOpenGitTracker={() => { setShowGitTracker(true); setShowCommandPalette(false); }}
         onOpenTools={() => { setShowToolsModal(true); setShowCommandPalette(false); }}
         onOpenSnippets={() => { setShowSnippets(true); setShowCommandPalette(false); }}
+      />
+
+      {/* GitHub Authentication Modal */}
+      <GitHubAuthModal
+        isOpen={showGitHubAuth}
+        onClose={() => setShowGitHubAuth(false)}
+        theme={theme}
       />
     </div>
   );

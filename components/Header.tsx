@@ -1,14 +1,16 @@
 import * as React from 'react';
-import { Terminal, Sparkles, Settings, LayoutTemplate, MessageSquare } from 'lucide-react';
+import { Terminal, Sparkles, Settings, LayoutTemplate, MessageSquare, Github } from 'lucide-react';
 import { ThemeConfig, ViewMode } from '../types';
 
 interface HeaderProps {
   theme: ThemeConfig;
   viewMode: ViewMode;
   onOpenSettings: () => void;
+  onOpenGitHubAuth?: () => void;
+  isGitHubConnected?: boolean;
 }
 
-const Header: React.FC<HeaderProps> = ({ theme, viewMode, onOpenSettings }) => {
+const Header: React.FC<HeaderProps> = ({ theme, viewMode, onOpenSettings, onOpenGitHubAuth, isGitHubConnected }) => {
   return (
     <header className={`border-b ${theme.border} ${theme.bgPanelHeader} backdrop-blur-sm sticky top-0 z-10 transition-colors duration-300`}>
       <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 h-16 flex items-center justify-between">
@@ -35,6 +37,19 @@ const Header: React.FC<HeaderProps> = ({ theme, viewMode, onOpenSettings }) => {
             <Sparkles className="w-4 h-4 text-yellow-500" />
             <span className="hidden lg:inline">Gemini 2.5 Flash</span>
           </div>
+          
+          {onOpenGitHubAuth && (
+            <button 
+              onClick={onOpenGitHubAuth}
+              className={`p-2 rounded-full hover:bg-white/5 ${isGitHubConnected ? 'text-green-500' : theme.textMuted} hover:text-white transition-colors relative`}
+              title={isGitHubConnected ? "GitHub Connected" : "Connect GitHub"}
+            >
+              <Github className="w-5 h-5" />
+              {isGitHubConnected && (
+                <div className="absolute top-1 right-1 w-2 h-2 bg-green-500 rounded-full" />
+              )}
+            </button>
+          )}
           
           <button 
             onClick={onOpenSettings}
