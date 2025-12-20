@@ -394,6 +394,54 @@ const executeToolAction = (
         logger.logToolCall('create_file', true, `Created ${args.name}`);
         if (onStatusUpdate) onStatusUpdate(`✨ Created ${args.name}`);
       }
+    } else if (toolName === 'apply_multi_patch') {
+      if (onStatusUpdate) onStatusUpdate(`🔀 Applying multi-file patch...`);
+      const patches = args.patches || [];
+      const results: string[] = [];
+      const changes: FileDiff[] = [];
+      let successCount = 0;
+      let errorCount = 0;
+      
+      // Validate all patches first (atomic operation)
+      for (const patch of patches) {
+        if (isFileProtected(patch.file)) {
+          toolOutput = `Error: Cannot modify protected file "${patch.file}". Multi-patch aborted.`;
+          logger.logToolCall('apply_multi_patch', false, `Blocked by protected file: ${patch.file}`);
+          if (onStatusUpdate) onStatusUpdate(`🚫 Multi-patch blocked`);
+          return { output: toolOutput };
+        }
+        
+        const existing = files.find(f => f.name === patch.file);
+        if (!existing) {
+          toolOutput = `Error: File "${patch.file}" not found. Multi-patch aborted.\n\nAvailable files: ${files.map(f => f.name).slice(0, 20).join(', ')}`;
+          logger.logToolCall('apply_multi_patch', false, `File not found: ${patch.file}`);
+          if (onStatusUpdate) onStatusUpdate(`🚫 Multi-patch blocked`);
+          return { output: toolOutput };
+        }
+      }
+      
+      // All validations passed, apply all patches
+      for (const patch of patches) {
+        const existing = files.find(f => f.name === patch.file);
+        if (existing) {
+          changes.push({
+            id: generateUUID(),
+            fileName: patch.file,
+            originalContent: existing.content,
+            newContent: patch.content,
+            type: 'update'
+          });
+          results.push(`✅ ${patch.file}`);
+          successCount++;
+        }
+      }
+      
+      toolOutput = `Success: Applied multi-patch to ${successCount} file(s)${args.description ? `\nDescription: ${args.description}` : ''}\n\nUpdated files:\n${results.join('\n')}`;
+      logger.logToolCall('apply_multi_patch', true, `Updated ${successCount} files`);
+      if (onStatusUpdate) onStatusUpdate(`✅ Multi-patch applied (${successCount} files)`);
+      
+      // Return special marker for multi-patch
+      return { output: toolOutput, change: undefined, multiChanges: changes };
     } else if (toolName === 'delete_file') {
       if (isFileProtected(args.name)) {
         toolOutput = `Error: Cannot delete protected file "${args.name}".`;
@@ -965,24 +1013,29 @@ export const fixCodeWithGemini = async (request: FixRequest): Promise<FixRespons
         };
         allToolCalls.push(toolCall);
 
-        let { output, change } = executeToolAction(fc.name, args, safeAllFiles, logger, knowledgeManager);
+        let { output, change, multiChanges } = executeToolAction(fc.name, args, safeAllFiles, logger, knowledgeManager) as any;
         
         // ENHANCED: Intelligent retry logic for common tool errors
         if (output.startsWith('Error:')) {
           const retryResult = attemptToolParameterFix(fc.name, args, output, safeAllFiles);
           if (retryResult.shouldRetry) {
             console.log(`🔧 Retrying ${fc.name} with fixed parameters:`, retryResult.fixedArgs);
-            const retryExecution = executeToolAction(fc.name, retryResult.fixedArgs, safeAllFiles, logger, knowledgeManager);
+            const retryExecution = executeToolAction(fc.name, retryResult.fixedArgs, safeAllFiles, logger, knowledgeManager) as any;
             if (!retryExecution.output.startsWith('Error:')) {
               output = `✅ Auto-fixed parameters:\n${retryExecution.output}`;
               change = retryExecution.change;
+              multiChanges = retryExecution.multiChanges;
             } else {
               output = `❌ Retry failed. ${output}\n\nSuggestion: ${retryResult.suggestion}`;
             }
           }
         }
         
+        // Handle both single change and multi-changes
         if (change) allProposedChanges.push(change);
+        if (multiChanges && Array.isArray(multiChanges)) {
+          allProposedChanges.push(...multiChanges);
+        }
 
         // Add Tool Result to History
         if (isGemini) {
@@ -1168,14 +1221,14 @@ export const streamFixCodeWithGemini = async (
             }
 
             // Execute logic with Status Update Callback
-            const { output, change } = executeToolAction(
+            const { output, change, multiChanges } = executeToolAction(
               tc.name,
               args,
               safeAllFiles,
               logger,
               knowledgeManager,
               callbacks.onStatusUpdate // Pass the callback down!
-            );
+            ) as any;
 
             // Emit changes if any
             if (change && callbacks.onProposedChanges) {
@@ -1184,7 +1237,13 @@ export const streamFixCodeWithGemini = async (
               const successMsg = `\n\n✅ [${tc.name}] Executed successfully\n`;
               accumulatedGlobalStream += successMsg;
               callbacks.onContent(successMsg);
-            } else if (!change && tc.name !== 'list_files' && tc.name !== 'search_files' && tc.name !== 'read_file' && tc.name !== 'save_knowledge') {
+            } else if (multiChanges && Array.isArray(multiChanges) && callbacks.onProposedChanges) {
+              // Handle multi-patch changes
+              callbacks.onProposedChanges(multiChanges);
+              const successMsg = `\n\n✅ [${tc.name}] Applied ${multiChanges.length} changes\n`;
+              accumulatedGlobalStream += successMsg;
+              callbacks.onContent(successMsg);
+            } else if (!change && !multiChanges && tc.name !== 'list_files' && tc.name !== 'search_files' && tc.name !== 'read_file' && tc.name !== 'save_knowledge') {
               // Tool executed but no change (might be an error)
               const feedbackMsg = `\n\n⚠️ [${tc.name}] ${output.slice(0, 100)}...\n`;
               accumulatedGlobalStream += feedbackMsg;

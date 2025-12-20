@@ -27,6 +27,29 @@ export const UNIVERSAL_TOOL_DEFINITIONS = {
       required: ['name', 'content']
     }
   },
+  apply_multi_patch: {
+    name: 'apply_multi_patch',
+    description: 'Apply multiple file updates in a single atomic operation. More efficient than multiple update_file calls. All changes succeed or all fail (rollback). Use this when you need to modify 2+ files simultaneously.',
+    parameters: {
+      type: Type.OBJECT,
+      properties: {
+        patches: {
+          type: Type.ARRAY,
+          description: 'Array of file patches to apply',
+          items: {
+            type: Type.OBJECT,
+            properties: {
+              file: { type: Type.STRING, description: 'File path to update' },
+              content: { type: Type.STRING, description: 'NEW COMPLETE content of the file (not a diff)' }
+            },
+            required: ['file', 'content']
+          }
+        },
+        description: { type: Type.STRING, description: 'Brief description of what this multi-patch accomplishes' }
+      },
+      required: ['patches']
+    }
+  },
   delete_file: {
     name: 'delete_file',
     description: 'Delete a file from the project. Use carefully.',

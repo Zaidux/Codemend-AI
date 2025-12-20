@@ -1,27 +1,31 @@
 # 🎨 UX/DX Improvements for Codemend-AI
 
-## ✅ Just Implemented
+## ✅ Implemented Features (December 2024)
 
-### 1. **Tools Management System** 🔧
+### **Core Features**
+
+#### 1. **Tools Management System** 🔧 ✅
 - **Feature**: Modal to enable/disable AI tools
 - **Location**: Button in attachment area (wrench icon)
+- **Status**: IMPLEMENTED
 - **Benefits**:
   - Control which tools AI can use
   - Reduce noise for specific tasks
   - Faster responses (fewer tools = less overhead)
   - Safety (disable risky tools like run_command)
 
-### 2. **Git Changes Tracker** 🔀
+#### 2. **Git Changes Tracker** 🔀 ✅
 - **Feature**: Visual git commit/push/pull interface
 - **Location**: Button in attachment area (git compare icon)
+- **Status**: IMPLEMENTED (Basic version - needs GitHub auth for push/pull)
 - **Benefits**:
   - See what files changed
   - Create commits without leaving app
-  - Push/pull from remote repos
   - Track modifications in real-time
 
-### 3. **Intelligent Tool Retry** 🔁
+#### 3. **Intelligent Tool Retry** 🔁 ✅
 - **Feature**: Auto-fix tool parameters when they fail
+- **Status**: IMPLEMENTED
 - **Capabilities**:
   - Fuzzy file matching ("App.tsx" → "src/App.tsx")
   - Line number bounds correction
@@ -32,28 +36,70 @@
   - AI self-corrects mistakes
   - Better user experience
 
-### 4. **Advanced AI Tools** 🚀
+#### 4. **Advanced AI Tools** 🚀 ✅
+- **Status**: IMPLEMENTED
 - **generate_tests**: Auto-generate unit/integration tests
 - **security_scan**: Find vulnerabilities (XSS, SQL injection, secrets)
 - **code_review**: Automated best practices review
 - **analyze_dependencies**: Dependency audit & upgrades
 - **performance_profile**: Find performance bottlenecks
 
+#### 5. **Custom Terminal Commands** ⚡ ✅
+- **Status**: IMPLEMENTED (commit e0730b1)
+- **Features**:
+  - `addcmd <name> <script>` - Create custom commands
+  - `listcmds` - List all custom commands
+  - `removecmd <name>` - Delete custom commands
+  - Support for placeholders: $1, $2, $*
+  - localStorage persistence
+- **Example**: `addcmd deploy npm run build && git push`
+
 ---
 
-## 🎯 Recommended Next-Level UX/DX Improvements
+## 🔧 Next Priority Features (In Progress)
 
-### Tier 1: Immediate Impact
+### **6. Multi-File Patch Tool** 🔀 (IN PROGRESS)
+- **Purpose**: Allow AI to apply multiple file changes in one operation
+- **Features**:
+  - Batch edit multiple files simultaneously
+  - Atomic operations (all or nothing)
+  - Progress tracking for each file
+  - Rollback on failure
+- **Benefit**: Faster, more efficient AI edits across the codebase
+- **Implementation**: New `apply_multi_patch` AI tool
 
-#### 1. **Command Palette** ⌨️
-```typescript
-// Press Cmd/Ctrl + K to open
-- Quick file search
-- Quick action (create file, switch mode, etc.)
-- Recent files
-- Jump to definition
-```
-**Benefit**: Keyboard-first workflow, 10x faster navigation
+### **7. GitHub Account Connection** 🔗 (IN PROGRESS)
+- **Purpose**: Enable real push/pull operations with GitHub
+- **Features**:
+  - OAuth GitHub authentication
+  - Store access token securely
+  - Real-time sync status
+  - Pull latest changes from remote
+  - Push commits to remote repository
+  - Branch management
+- **Benefit**: Full Git workflow without leaving the app
+- **Integration**: Enhances existing Git Tracker
+  - `listcmds` - List all custom commands
+  - `removecmd <name>` - Delete custom commands
+  - Support for placeholders: $1, $2, $*
+  - localStorage persistence
+- **Example**: `addcmd deploy npm run build && git push`
+
+---
+
+## 🎯 Tier-Based Implementation Roadmap
+
+### Tier 1: Immediate Impact ⭐
+
+#### 1. **Command Palette** ⌨️ ✅ IMPLEMENTED (commit 7a929db)
+- **Status**: IMPLEMENTED
+- **Features**:
+  - Press Cmd/Ctrl + K to open
+  - Quick file search with fuzzy matching
+  - Quick actions (create file, switch mode, etc.)
+  - Session and project navigation
+  - Categorized results
+- **Benefit**: Keyboard-first workflow, 10x faster navigation
 
 #### 2. **Multi-File Editing** 📝
 ```typescript
@@ -96,37 +142,40 @@
 
 ---
 
-### Tier 2: Developer Experience
+### Tier 2: Developer Experience 🚀
 
-#### 6. **Hot Reload Preview** ⚡
-```typescript
-// Auto-refresh preview on file changes
-- Instant feedback loop
-- Error overlay in preview
-- Mobile device preview
-- Multiple viewport sizes
-```
-**Benefit**: See changes immediately
+#### 6. **Hot Reload Preview** ⚡ ✅ IMPLEMENTED (commit 296ac9e)
+- **Status**: IMPLEMENTED
+- **Features**:
+  - Auto-refresh preview on file changes
+  - Toggle button (⚡ ON/OFF) with green indicator
+  - Last reload timestamp display
+  - 1-second debounce to prevent excessive refreshes
+  - Console log notification on reload
+- **Benefit**: See changes immediately, instant feedback loop
 
-#### 7. **AI Chat History Search** 🔎
-```typescript
-// Full-text search across all chats
-- Filter by: date, project, tool used
-- Regex support
-- Export search results
-- Bookmarks for important messages
-```
-**Benefit**: Find past solutions quickly
+#### 7. **AI Chat History Search** 🔎 ✅ IMPLEMENTED (commit 91a2a55)
+- **Status**: IMPLEMENTED
+- **Features**:
+  - Full-text search across all chat sessions
+  - Filter by: role (user/AI), date (today/week/month)
+  - Regex support for advanced searches
+  - Highlighted results with context preview
+  - Click to navigate to specific message
+  - Search button in sidebar
+- **Benefit**: Find past solutions quickly
 
-#### 8. **Code Snippets Library** 📦
-```typescript
-// Save reusable code patterns
-- User-defined snippets
-- AI-suggested snippets from usage
-- Share snippets across projects
-- Import from GitHub gists
-```
-**Benefit**: Reuse common patterns
+#### 8. **Code Snippets Library** 📦 ✅ IMPLEMENTED (commit bca820d)
+- **Status**: IMPLEMENTED
+- **Features**:
+  - Save and reuse code patterns
+  - Categorize with tags and language
+  - Full-text search across snippets
+  - 5 default snippets included
+  - Copy or insert snippets into active file
+  - Usage tracking for each snippet
+  - Accessible via Command Palette or purple book icon
+- **Benefit**: Reuse common patterns
 
 #### 9. **Project Templates** 🎨
 ```typescript
