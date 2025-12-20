@@ -1,5 +1,5 @@
 import * as React from 'react';
-import { Terminal, Sparkles, Settings, LayoutTemplate, MessageSquare, Github } from 'lucide-react';
+import { Terminal, Sparkles, Settings, LayoutTemplate, MessageSquare, Github, Brain } from 'lucide-react';
 import { ThemeConfig, ViewMode } from '../types';
 
 interface HeaderProps {
@@ -8,9 +8,10 @@ interface HeaderProps {
   onOpenSettings: () => void;
   onOpenGitHubAuth?: () => void;
   isGitHubConnected?: boolean;
+  onOpenPlannerRoom?: () => void;
 }
 
-const Header: React.FC<HeaderProps> = ({ theme, viewMode, onOpenSettings, onOpenGitHubAuth, isGitHubConnected }) => {
+const Header: React.FC<HeaderProps> = ({ theme, viewMode, onOpenSettings, onOpenGitHubAuth, isGitHubConnected, onOpenPlannerRoom }) => {
   return (
     <header className={`border-b ${theme.border} ${theme.bgPanelHeader} backdrop-blur-sm sticky top-0 z-10 transition-colors duration-300`}>
       <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 h-16 flex items-center justify-between">
@@ -48,6 +49,16 @@ const Header: React.FC<HeaderProps> = ({ theme, viewMode, onOpenSettings, onOpen
               {isGitHubConnected && (
                 <div className="absolute top-1 right-1 w-2 h-2 bg-green-500 rounded-full" />
               )}
+            </button>
+          )}
+
+          {onOpenPlannerRoom && (
+            <button 
+              onClick={onOpenPlannerRoom}
+              className={`p-2 rounded-full hover:bg-white/5 ${theme.textMuted} hover:text-purple-400 transition-colors`}
+              title="Planner Room - Expert Planning & Task Delegation"
+            >
+              <Brain className="w-5 h-5" />
             </button>
           )}
           

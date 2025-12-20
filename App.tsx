@@ -18,10 +18,11 @@ import { CommandPalette } from './components/CommandPalette';
 import { SnippetsLibrary } from './components/SnippetsLibrary';
 import { GitHubAuthModal } from './components/GitHubAuthModal'; 
 import { MultiDiffViewer } from './components/MultiDiffViewer';
+import { PlannerRoom } from './components/PlannerRoom';
 
 import { THEMES, DEFAULT_LLM_CONFIG, DEFAULT_ROLES } from './constants';
 import { GitHubService, parseGitHubUrl, GitHubFile } from './services/githubApiService';
-import { CodeLanguage, AppMode, ThemeType, Session, ChatMessage, ViewMode, ProjectFile, LLMConfig, Project, Attachment, AgentRole, KnowledgeEntry, TodoItem, FileDiff, ProjectSummary } from './types';
+import { CodeLanguage, AppMode, ThemeType, Session, ChatMessage, ViewMode, ProjectFile, LLMConfig, Project, Attachment, AgentRole, KnowledgeEntry, TodoItem, FileDiff, ProjectSummary, DelegatedTask, PlannerKnowledge } from './types';
 import { fixCodeWithGemini, streamFixCodeWithGemini } from './services/llmService';
 import { fetchRepoContents } from './services/githubService';
 import { contextService } from './services/contextService';
@@ -87,6 +88,7 @@ const App: React.FC = () => {
   const [showGitHubAuth, setShowGitHubAuth] = useState(false);
   const [showMultiDiff, setShowMultiDiff] = useState(false);
   const [multiDiffChanges, setMultiDiffChanges] = useState<FileDiff[]>([]);
+  const [showPlannerRoom, setShowPlannerRoom] = useState(false);
   const [repoInput, setRepoInput] = useState('');
   const [leftPanelTab, setLeftPanelTab] = useState<'code' | 'preview' | 'todos'>('code');
   const [activeTab, setActiveTab] = useState<'chats' | 'files' | 'knowledge'>('chats');
@@ -103,6 +105,23 @@ const App: React.FC = () => {
       return [];
   });
 
+  const [plannerSessions, setPlannerSessions] = useState<Session[]>(() => {
+      const saved = localStorage.getItem('cm_planner_sessions');
+      if (saved) return JSON.parse(saved);
+      return [];
+  });
+
+  const [delegatedTasks, setDelegatedTasks] = useState<DelegatedTask[]>(() => {
+      const saved = localStorage.getItem('cm_delegated_tasks');
+      if (saved) return JSON.parse(saved);
+      return [];
+  });
+
+  const [plannerKnowledge, setPlannerKnowledge] = useState<Record<string, PlannerKnowledge>>(() => {
+      const saved = localStorage.getItem('cm_planner_knowledge');
+      return saved ? JSON.parse(saved) : {};
+  });
+
   const [knowledgeBase, setKnowledgeBase] = useState<KnowledgeEntry[]>(() => {
       const saved = localStorage.getItem('cm_knowledge_enhanced');
       return saved ? JSON.parse(saved) : [];
@@ -110,6 +129,7 @@ const App: React.FC = () => {
 
   const [currentProjectId, setCurrentProjectId] = useState<string>(() => projects[0]?.id || '');
   const [currentSessionId, setCurrentSessionId] = useState<string>('');
+  const [currentPlannerSessionId, setCurrentPlannerSessionId] = useState<string>('');
   const [todoList, setTodoList] = useState<TodoItem[]>([]);
   const [pendingDiffs, setPendingDiffs] = useState<FileDiff[]>([]);
   const [useInternet, setUseInternet] = useState(false);
@@ -132,6 +152,9 @@ const App: React.FC = () => {
   const activeFile = activeProject.files.find(f => f.id === activeProject.activeFileId) || activeProject.files[0];
   const activeSession = sessions.find(s => s.id === currentSessionId) || {
       id: 'temp', projectId: activeProject.id, title: 'New Chat', messages: [], lastModified: Date.now(), mode: 'FIX' as AppMode
+  };
+  const activePlannerSession = plannerSessions.find(s => s.id === currentPlannerSessionId) || {
+      id: 'temp_planner', projectId: activeProject.id, title: 'Planner Session', messages: [], lastModified: Date.now(), mode: 'CHAT' as AppMode, type: 'planner' as const
   };
 
   const [inputInstruction, setInputInstruction] = useState<string>('');
@@ -164,6 +187,9 @@ const App: React.FC = () => {
   useEffect(() => { localStorage.setItem('cm_roles', JSON.stringify(roles)); }, [roles]);
   useEffect(() => { localStorage.setItem('cm_projects', JSON.stringify(projects)); }, [projects]);
   useEffect(() => { localStorage.setItem('cm_sessions_v2', JSON.stringify(sessions)); }, [sessions]);
+  useEffect(() => { localStorage.setItem('cm_planner_sessions', JSON.stringify(plannerSessions)); }, [plannerSessions]);
+  useEffect(() => { localStorage.setItem('cm_delegated_tasks', JSON.stringify(delegatedTasks)); }, [delegatedTasks]);
+  useEffect(() => { localStorage.setItem('cm_planner_knowledge', JSON.stringify(plannerKnowledge)); }, [plannerKnowledge]);
   useEffect(() => { localStorage.setItem('cm_knowledge_enhanced', JSON.stringify(knowledgeBase)); }, [knowledgeBase]);
   useEffect(() => { localStorage.setItem('cm_use_streaming', String(useStreaming)); }, [useStreaming]);
   useEffect(() => { localStorage.setItem('cm_project_summaries', JSON.stringify(projectSummaries)); }, [projectSummaries]);
@@ -640,6 +666,169 @@ const App: React.FC = () => {
     }
   };
 
+  // --- PLANNER ROOM HANDLERS ---
+
+  const handlePlannerMessage = async (message: string, attachments?: Attachment[]) => {
+    const userMsg: ChatMessage = {
+      id: crypto.randomUUID(),
+      role: 'user',
+      content: message,
+      timestamp: Date.now(),
+      attachments
+    };
+
+    const newMessages = [...activePlannerSession.messages, userMsg];
+    updatePlannerSession({ 
+      messages: newMessages,
+      title: activePlannerSession.messages.length === 0 ? 'Planning Session...' : activePlannerSession.title 
+    });
+
+    setIsLoading(true);
+    setError('');
+    setProcessSteps([]);
+    setIsProcessComplete(false);
+
+    try {
+      // Get planner role
+      const plannerRole = roles.find(r => r.id === llmConfig.plannerRoleId) || roles.find(r => r.id === 'role_architect');
+      
+      if (useStreaming) {
+        const streamingMsgId = crypto.randomUUID();
+        const streamingMsg: ChatMessage = {
+          id: streamingMsgId, role: 'model', content: '', timestamp: Date.now()
+        };
+        updatePlannerSession({ messages: [...newMessages, streamingMsg] });
+
+        await streamFixCodeWithGemini({
+          llmConfig,
+          history: newMessages,
+          currentMessage: message,
+          activeFile,
+          allFiles: activeProject.files,
+          mode: 'CHAT',
+          attachments,
+          useHighCapacity: highCapacity,
+          roles,
+          knowledgeBase,
+          useInternet,
+          currentTodos: todoList
+        }, {
+          onToken: (token) => {
+            updatePlannerSession({
+              messages: newMessages.concat([{
+                ...streamingMsg,
+                content: streamingMsg.content + token
+              }])
+            });
+          },
+          onToolCall: (toolCall) => {
+            setProcessSteps(prev => [...prev, `🔧 ${toolCall.name}: ${toolCall.description || 'Processing...'}`]);
+          },
+          onToolCalls: (toolCalls) => processToolCalls(toolCalls),
+          onProposedChanges: (changes) => {
+            // Planner shouldn't directly propose code changes
+            // Instead, this would be handled through task delegation
+          },
+          onComplete: (fullResponse) => {
+            setIsProcessComplete(true);
+            const aiMsg: ChatMessage = {
+              id: streamingMsgId, role: 'model', content: fullResponse, timestamp: Date.now()
+            };
+            updatePlannerSession({ messages: [...newMessages, aiMsg] });
+          },
+          onError: (errMsg) => {
+            setError(errMsg);
+            updatePlannerSession({ messages: newMessages });
+          }
+        });
+      } else {
+        // Non-streaming
+        const response = await fixCodeWithGemini({
+          llmConfig,
+          history: newMessages,
+          currentMessage: message,
+          activeFile,
+          allFiles: activeProject.files,
+          mode: 'CHAT',
+          attachments,
+          useHighCapacity: highCapacity,
+          roles,
+          knowledgeBase,
+          useInternet,
+          currentTodos: todoList
+        });
+
+        if (response.toolCalls) processToolCalls(response.toolCalls);
+        
+        const aiMsg: ChatMessage = { 
+          id: crypto.randomUUID(), 
+          role: 'model', 
+          content: response.response, 
+          timestamp: Date.now() 
+        };
+        updatePlannerSession({ messages: [...newMessages, aiMsg] });
+      }
+
+      // Generate title for first message
+      if (activePlannerSession.messages.length === 0 && message) {
+        generatePlannerSessionTitle(message);
+      }
+    } catch (err: any) {
+      console.error('Planner error:', err);
+      setError(err.message || 'Failed to get planner response');
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+  const updatePlannerSession = (updates: Partial<Session>) => {
+    if (activePlannerSession.id === 'temp_planner') {
+      const newSession: Session = {
+        ...activePlannerSession,
+        ...updates,
+        id: crypto.randomUUID(),
+        type: 'planner',
+        lastModified: Date.now()
+      };
+      setPlannerSessions(prev => [...prev, newSession]);
+      setCurrentPlannerSessionId(newSession.id);
+    } else {
+      setPlannerSessions(prev => 
+        prev.map(s => s.id === activePlannerSession.id 
+          ? { ...s, ...updates, lastModified: Date.now() }
+          : s
+        )
+      );
+    }
+  };
+
+  const generatePlannerSessionTitle = async (firstMessage: string) => {
+    try {
+      const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${llmConfig.apiKey}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          contents: [{
+            parts: [{ text: `Generate a concise 3-5 word title for this planning session:\n\n"${firstMessage.slice(0, 200)}"\n\nRespond ONLY with the title, no quotes or extra text.` }]
+          }]
+        })
+      });
+      
+      if (response.ok) {
+        const data = await response.json();
+        const title = data.candidates?.[0]?.content?.parts?.[0]?.text?.trim() || firstMessage.slice(0, 30);
+        updatePlannerSession({ title: title.replace(/^["']|["']$/g, '') });
+      }
+    } catch (e) {
+      console.warn('Failed to generate planner title:', e);
+    }
+  };
+
+  const handleDelegateTask = (task: DelegatedTask) => {
+    setDelegatedTasks(prev => [...prev, task]);
+    // This will be expanded in Phase 4 with approval modal
+  };
+
   // --- RENDER ---
   return (
     <div className={`flex h-screen overflow-hidden ${theme.bgApp} ${theme.textMain} transition-colors duration-300`}>
@@ -668,6 +857,7 @@ const App: React.FC = () => {
           onOpenSettings={() => setShowSettings(true)}
           onOpenGitHubAuth={() => setShowGitHubAuth(true)}
           isGitHubConnected={!!localStorage.getItem('gh_token')}
+          onOpenPlannerRoom={() => setShowPlannerRoom(true)}
         />
 
         <div className="flex-grow flex flex-col lg:flex-row overflow-hidden relative">
@@ -1122,6 +1312,23 @@ const App: React.FC = () => {
         isOpen={showGitHubAuth}
         onClose={() => setShowGitHubAuth(false)}
         theme={theme}
+      />
+
+      {/* Planner Room */}
+      <PlannerRoom
+        isOpen={showPlannerRoom}
+        onClose={() => setShowPlannerRoom(false)}
+        theme={theme}
+        plannerSession={activePlannerSession}
+        onUpdateSession={updatePlannerSession}
+        delegatedTasks={delegatedTasks}
+        onDelegateTask={handleDelegateTask}
+        llmConfig={llmConfig}
+        roles={roles}
+        knowledgeBase={knowledgeBase}
+        projectFiles={activeProject.files}
+        isLoading={isLoading}
+        onSendMessage={handlePlannerMessage}
       />
 
       {/* Multi Diff Viewer */}

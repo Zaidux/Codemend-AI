@@ -135,6 +135,46 @@ export interface Session {
   messages: ChatMessage[];
   lastModified: number;
   mode: AppMode;
+  type?: 'chat' | 'planner' | 'delegated'; // Session type
+  plannerSessionId?: string; // Link to parent planner session (for delegated tasks)
+  delegatedTaskIds?: string[]; // Tasks delegated from this planner session
+}
+
+export interface DelegatedTask {
+  id: string;
+  plannerSessionId: string; // Which planner session created this
+  title: string;
+  description: string;
+  requirements: string[]; // Specific requirements to verify
+  estimatedTime?: string;
+  priority: 'low' | 'medium' | 'high' | 'critical';
+  status: 'pending_approval' | 'approved' | 'in_progress' | 'verifying' | 'completed' | 'failed';
+  targetProjectId?: string; // Which project to execute in (can be new)
+  codingSessionId?: string; // The session where coding happens
+  createdAt: number;
+  startedAt?: number;
+  completedAt?: number;
+  verificationResults?: VerificationResult[];
+  todoIds?: string[]; // Associated todo items
+}
+
+export interface VerificationResult {
+  timestamp: number;
+  method: 'regex' | 'semantic';
+  passed: boolean;
+  completeness: number; // 0-100%
+  issues: string[];
+  recommendations: string[];
+  verifiedFiles: string[];
+}
+
+export interface PlannerKnowledge {
+  plannerSessionId: string;
+  projectAnalysis?: string;
+  decisionsLog: string[]; // Track planner's decisions
+  delegationHistory: DelegatedTask[];
+  verificationsPerformed: number;
+  lastUpdated: number;
 }
 
 export interface AgentRole {
