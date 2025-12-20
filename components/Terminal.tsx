@@ -1,4 +1,4 @@
-import React, { useEffect, useRef } from 'react';
+import React, { useEffect, useRef, useImperativeHandle, forwardRef } from 'react';
 import { X, Play, Trash2, Scroll, Bot, Terminal as TerminalIcon } from 'lucide-react';
 import { useTerminal } from '../hooks/useTerminal';
 import { ProjectFile, ThemeConfig } from '../types';
@@ -10,12 +10,16 @@ interface TerminalProps {
   className?: string;
 }
 
-export const Terminal: React.FC<TerminalProps> = ({ 
+export interface TerminalHandle {
+  openTerminal: () => void;
+}
+
+export const Terminal = forwardRef<TerminalHandle, TerminalProps>(({ 
   files, 
   theme, 
   onAIHelpRequest,
   className = '' 
-}) => {
+}, ref) => {
   const {
     state,
     outputEndRef,
@@ -32,6 +36,11 @@ export const Terminal: React.FC<TerminalProps> = ({
     hasErrors,
     lastError
   } = useTerminal(files);
+
+  // Expose openTerminal to parent via ref
+  useImperativeHandle(ref, () => ({
+    openTerminal
+  }));
 
   const handleKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
     if (e.key === 'Enter') {
@@ -247,6 +256,8 @@ export const Terminal: React.FC<TerminalProps> = ({
       </div>
     </div>
   );
-};
+});
+
+Terminal.displayName = 'Terminal';
 
 export default Terminal;

@@ -1,6 +1,6 @@
 import * as React from 'react';
 import { useState, useEffect, useRef } from 'react';
-import { Sparkles, Play, Wrench, X, Settings, Send, Sidebar as SidebarIcon, Code2, ArrowLeft, Eye, Image as ImageIcon, Mic, StopCircle, BookOpen, Globe, Brain, ListTodo, GitCompare, Plus, Zap, RefreshCw, Pencil, AlertTriangle } from 'lucide-react';
+import { Sparkles, Play, Wrench, X, Settings, Send, Sidebar as SidebarIcon, Code2, ArrowLeft, Eye, Image as ImageIcon, Mic, StopCircle, BookOpen, Globe, Brain, ListTodo, GitCompare, Plus, Zap, RefreshCw, Pencil, AlertTriangle, Terminal as TerminalIcon } from 'lucide-react';
 
 import Header from './components/Header';
 import MarkdownRenderer from './components/MarkdownRenderer';
@@ -136,6 +136,7 @@ const App: React.FC = () => {
   const fileInputRef = useRef<HTMLInputElement>(null);
   const imageInputRef = useRef<HTMLInputElement>(null);
   const abortControllerRef = useRef<AbortController | null>(null);
+  const terminalRef = useRef<{ openTerminal: () => void } | null>(null);
   const theme = THEMES[themeName];
 
   // Initialize Knowledge Manager
@@ -675,6 +676,7 @@ const App: React.FC = () => {
                      <div className="flex items-center gap-2">
                        <button onClick={() => setUseStreaming(!useStreaming)} className={`text-xs px-2 py-1 rounded border ${useStreaming ? 'bg-green-500/20 text-green-400 border-green-500/30' : 'bg-gray-500/20 text-gray-400 border-gray-500/30'}`}>{useStreaming ? 'Streaming: ON' : 'Streaming: OFF'}</button>
                        <button onClick={() => setIsEditorOpen(!isEditorOpen)} className={`flex items-center gap-1.5 px-3 py-1.5 rounded-full text-xs font-medium border ${isEditorOpen ? `${theme.accentBg} ${theme.accent} border-${theme.accent}/20` : `${theme.bgApp} border-${theme.border} ${theme.textMuted}`}`}><Code2 className="w-3.5 h-3.5" /> <span className="hidden sm:inline">{isEditorOpen ? 'Hide Code' : 'View Code'}</span></button>
+                       <button onClick={() => terminalRef.current?.openTerminal()} className={`p-1.5 rounded-full hover:bg-white/10 transition-colors ${theme.textMuted} hover:text-white`} title="Open Terminal"><TerminalIcon className="w-4 h-4" /></button>
                      </div>
                   </div>
              )}
@@ -881,6 +883,7 @@ const App: React.FC = () => {
 
       {/* TERMINAL OVERLAY */}
       <Terminal 
+        ref={terminalRef}
         files={activeProject.files}
         theme={theme}
         onAIHelpRequest={handleTerminalError}
