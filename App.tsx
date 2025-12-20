@@ -14,6 +14,7 @@ import ProcessLog from './components/ProcessLog';
 import Terminal from './components/Terminal'; 
 import { ToolsManagementModal } from './components/ToolsManagementModal';
 import { GitTracker } from './components/GitTracker'; 
+import { CommandPalette } from './components/CommandPalette'; 
 
 import { THEMES, DEFAULT_LLM_CONFIG, DEFAULT_ROLES } from './constants';
 import { CodeLanguage, AppMode, ThemeType, Session, ChatMessage, ViewMode, ProjectFile, LLMConfig, Project, Attachment, AgentRole, KnowledgeEntry, TodoItem, FileDiff, ProjectSummary } from './types';
@@ -22,6 +23,7 @@ import { fetchRepoContents } from './services/githubService';
 import { contextService } from './services/contextService';
 import { modelSwitchService } from './services/modelSwitchService';
 import { KnowledgeManager } from './services/llmTools';
+import { GitService } from './services/gitService';
 
 // --- FACTORY FUNCTIONS ---
 const createNewFile = (name: string = 'script.js'): ProjectFile => ({
@@ -76,6 +78,7 @@ const App: React.FC = () => {
   const [showGithubInput, setShowGithubInput] = useState(false);
   const [showToolsModal, setShowToolsModal] = useState(false);
   const [showGitTracker, setShowGitTracker] = useState(false);
+  const [showCommandPalette, setShowCommandPalette] = useState(false);
   const [repoInput, setRepoInput] = useState('');
   const [leftPanelTab, setLeftPanelTab] = useState<'code' | 'preview' | 'todos'>('code');
   const [activeTab, setActiveTab] = useState<'chats' | 'files' | 'knowledge'>('chats');
@@ -180,6 +183,21 @@ const App: React.FC = () => {
     };
     generateProjectSummary();
   }, [activeProject.files, activeProject.id]);
+
+  // Command Palette keyboard shortcut (Cmd/Ctrl + K)
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if ((e.metaKey || e.ctrlKey) && e.key === 'k') {
+        e.preventDefault();
+        setShowCommandPalette(prev => !prev);
+      }
+      if (e.key === 'Escape' && showCommandPalette) {
+        setShowCommandPalette(false);
+      }
+    };
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [showCommandPalette]);
 
   useEffect(() => {
     if (chatContainerRef.current) chatContainerRef.current.scrollTop = chatContainerRef.current.scrollHeight;
@@ -922,20 +940,51 @@ const App: React.FC = () => {
         theme={theme}
         currentProject={activeProject}
         onCommit={(message, files) => {
-          console.log('Commit:', message, files);
-          alert(`Committed ${files.length} files: ${message}`);
-          // In a real implementation, this would call git service
+          const gitService = GitService.getInstance();
+          gitService.commit(activeProject.id, message, files.map(name => ({
+            fileName: name,
+            content: activeProject.files.find(f => f.name === name)?.content || '',
+            status: 'modified' as const
+          })));
+          setShowGitTracker(false);
         }}
         onPush={() => {
-          console.log('Push to remote');
-          alert('Pushed changes to remote repository');
-          // In a real implementation, this would call git service
+          if (activeProject.githubUrl) {
+            alert('Push functionality requires GitHub integration. Configure your GitHub token in Settings.');
+          } else {
+            alert('No remote repository configured. Import from GitHub or add a remote URL.');
+          }
+          setShowGitTracker(false);
         }}
         onPull={() => {
-          console.log('Pull from remote');
-          alert('Pulled changes from remote repository');
-          // In a real implementation, this would call git service
+          if (activeProject.githubUrl) {
+            alert('Pull functionality requires GitHub integration. This will fetch latest changes from the remote.');
+          } else {
+            alert('No remote repository configured.');
+          }
+          setShowGitTracker(false);
         }}
+      />
+
+      {/* Command Palette */}
+      <CommandPalette
+        isOpen={showCommandPalette}
+        onClose={() => setShowCommandPalette(false)}
+        theme={theme}
+        projects={projects}
+        sessions={sessions}
+        activeProject={activeProject}
+        onSelectFile={(fileId) => { updateProject({ activeFileId: fileId }); setShowCommandPalette(false); }}
+        onSelectSession={(sessionId) => { setCurrentSessionId(sessionId); setShowCommandPalette(false); }}
+        onSelectProject={(projectId) => { setCurrentProjectId(projectId); setShowCommandPalette(false); }}
+        onCreateFile={handleCreateFile}
+        onCreateSession={handleCreateSession}
+        onCreateProject={handleCreateProject}
+        onOpenSettings={() => { setShowSettings(true); setShowCommandPalette(false); }}
+        onTogglePreview={() => { setIsEditorOpen(!isEditorOpen); setShowCommandPalette(false); }}
+        onOpenTerminal={() => { terminalRef.current?.openTerminal(); setShowCommandPalette(false); }}
+        onOpenGitTracker={() => { setShowGitTracker(true); setShowCommandPalette(false); }}
+        onOpenTools={() => { setShowToolsModal(true); setShowCommandPalette(false); }}
       />
     </div>
   );
