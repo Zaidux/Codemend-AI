@@ -48,6 +48,8 @@ const WebPreview: React.FC<WebPreviewProps> = ({ files, theme }) => {
   const [isDebouncing, setIsDebouncing] = React.useState(false);
   const [runtimeError, setRuntimeError] = React.useState<string | null>(null);
   const [showSourceCode, setShowSourceCode] = React.useState(false);
+  const [hotReloadEnabled, setHotReloadEnabled] = React.useState(true);
+  const [lastReloadTime, setLastReloadTime] = React.useState<number>(Date.now());
 
   // 1. Debounce Files to prevent Infinite Loops and flashing
   React.useEffect(() => {
@@ -55,10 +57,21 @@ const WebPreview: React.FC<WebPreviewProps> = ({ files, theme }) => {
     const handler = setTimeout(() => {
       setDebouncedFiles(files || []);
       setIsDebouncing(false);
+      
+      // Hot reload: increment key to force iframe refresh
+      if (hotReloadEnabled && files && files.length > 0) {
+        setKey(prev => prev + 1);
+        setLastReloadTime(Date.now());
+        setLogs(prev => [...prev, {
+          type: 'info',
+          message: '🔄 Hot reload triggered - Preview updated',
+          timestamp: new Date().toLocaleTimeString()
+        }]);
+      }
     }, 1000); // Wait 1 second after typing stops before recompiling
 
     return () => clearTimeout(handler);
-  }, [files]);
+  }, [files, hotReloadEnabled]);
 
   // 2. Extract Backend Endpoints (Memoized)
   React.useEffect(() => {
@@ -345,6 +358,12 @@ const WebPreview: React.FC<WebPreviewProps> = ({ files, theme }) => {
 
         <div className="flex items-center gap-2">
            {isDebouncing && <span className="text-xs text-blue-500 animate-pulse">Compiling...</span>}
+           {hotReloadEnabled && !isDebouncing && (
+             <span className="text-xs text-green-600 flex items-center gap-1">
+               <Activity className="w-3 h-3" />
+               {new Date(lastReloadTime).toLocaleTimeString()}
+             </span>
+           )}
            <div className="flex bg-gray-100 rounded-lg p-0.5">
             <button onClick={() => setActiveView('preview')} className={`px-3 py-1 text-xs font-medium rounded-md ${activeView === 'preview' ? 'bg-white shadow text-gray-800' : 'text-gray-500'}`}>Preview</button>
             {backendEndpoints.length > 0 && (
@@ -353,6 +372,13 @@ const WebPreview: React.FC<WebPreviewProps> = ({ files, theme }) => {
             <button onClick={() => setActiveView('code')} className={`px-3 py-1 text-xs font-medium rounded-md ${activeView === 'code' ? 'bg-white shadow text-gray-800' : 'text-gray-500'}`}>Source</button>
           </div>
           <div className="flex items-center gap-1">
+            <button 
+              onClick={() => setHotReloadEnabled(!hotReloadEnabled)} 
+              className={`px-3 py-1 text-xs font-medium rounded-md flex items-center gap-1 ${hotReloadEnabled ? 'bg-green-500 text-white' : 'bg-gray-100 text-gray-700 hover:bg-gray-200'}`}
+              title={hotReloadEnabled ? 'Hot Reload: ON (Auto-refresh on file changes)' : 'Hot Reload: OFF'}
+            >
+              ⚡ {hotReloadEnabled ? 'ON' : 'OFF'}
+            </button>
             <button 
               onClick={() => setShowSourceCode(!showSourceCode)} 
               className={`px-3 py-1 text-xs font-medium rounded-md ${showSourceCode ? 'bg-blue-500 text-white' : 'bg-gray-100 text-gray-700 hover:bg-gray-200'}`}
