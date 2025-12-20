@@ -14,6 +14,12 @@ export const useTerminal = (projectFiles: ProjectFile[] = []) => {
     autoScroll: true
   });
 
+  // Custom commands from localStorage
+  const [customCommands, setCustomCommands] = useState<Record<string, string>>(() => {
+    const saved = localStorage.getItem('cm_custom_terminal_commands');
+    return saved ? JSON.parse(saved) : {};
+  });
+
   const outputEndRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
 

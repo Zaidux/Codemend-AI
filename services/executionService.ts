@@ -160,6 +160,13 @@ export class ExecutionService {
         console.warn = originalConsole.warn;
         console.info = originalConsole.info;
 
+        // Provide detailed error information
+        const errorMessage = `${executionError.name}: ${executionError.message}`;
+        const stackTrace = executionError.stack || '';
+        errors.push(errorMessage);
+        errors.push('\\nStack Trace:');
+        errors.push(stackTrace);
+
         throw executionError;
       }
 

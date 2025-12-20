@@ -1,7 +1,8 @@
 import React, { useEffect, useRef, useImperativeHandle, forwardRef } from 'react';
-import { X, Play, Trash2, Scroll, Bot, Terminal as TerminalIcon } from 'lucide-react';
+import { X, Play, Trash2, Scroll, Bot, Terminal as TerminalIcon, Copy } from 'lucide-react';
 import { useTerminal } from '../hooks/useTerminal';
 import { ProjectFile, ThemeConfig } from '../types';
+import { CopyButton } from './CopyButton';
 
 interface TerminalProps {
   files: ProjectFile[];
@@ -120,6 +121,10 @@ export const Terminal = forwardRef<TerminalHandle, TerminalProps>(({
             >
               <Scroll className="w-3 h-3 text-white" />
             </button>
+            <CopyButton 
+              text={state.output.map(o => o.text).join('\\n')} 
+              className="p-1 bg-blue-500/20 hover:bg-blue-500/30" 
+            />
           </div>
         </div>
 
@@ -182,13 +187,18 @@ export const Terminal = forwardRef<TerminalHandle, TerminalProps>(({
             <div
               key={index}
               className={`
+                group flex items-start gap-2
                 whitespace-pre-wrap break-words
                 ${line.type === 'error' ? 'text-red-400' : 
                   line.type === 'info' ? 'text-blue-400' : 
                   'text-green-400'}
               `}
             >
-              {line.text}
+              <span className="flex-1">{line.text}</span>
+              <CopyButton 
+                text={line.text} 
+                className="opacity-0 group-hover:opacity-100 shrink-0" 
+              />
             </div>
           ))
         )}
