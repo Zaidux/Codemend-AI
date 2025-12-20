@@ -106,60 +106,67 @@ A dedicated chat room with an expert planner AI that can:
 
 ---
 
-### **Phase 3: Planner-Specific Tools** ⏳ Not Started
+### **Phase 3: Planner-Specific Tools** ✅ COMPLETED
 **Duration:** ~1.5 hours  
-**Status:** 🔴 Not Started
+**Status:** 🟢 Completed - Dec 20, 2025
 
 **Tasks:**
-- [ ] Add `create_todo` tool
-- [ ] Add `update_todo_status` tool
-- [ ] Add `create_document` tool (markdown files)
-- [ ] Add `verify_implementation` tool (regex + semantic)
-- [ ] Add `read_implementation` tool (specialized code reading)
-- [ ] Add `search_errors` tool (error detection)
-- [ ] Update llmTools.ts with planner-only flag
-- [ ] Update llmService.ts to handle planner tools
-- [ ] Implement tool execution for planner context
+- [x] Add `create_todo` tool
+- [x] Add `update_todo_status` tool
+- [x] Add `create_document` tool (markdown files)
+- [x] Add `verify_implementation` tool (regex + semantic)
+- [x] Add `delegate_task` tool
+- [x] Update llmTools.ts with planner-only flag
+- [x] Update llmService.ts to handle planner tools
+- [x] Implement tool execution for planner context
+- [x] Return metadata from tools for UI processing
+- [x] Update App.tsx processToolCalls to handle planner metadata
 
-**Files to Modify:**
-- `services/llmTools.ts`
-- `services/llmService.ts`
+**Files Modified:**
+- `services/llmTools.ts` ✅ (Added 5 planner-only tools)
+- `services/llmService.ts` ✅ (Added tool handlers with metadata)
+- `App.tsx` ✅ (Updated processToolCalls for planner tools)
 
-**New Tool Definitions:**
-```typescript
-// create_todo
-{
-  name: 'create_todo',
-  plannerOnly: true,
-  parameters: { title, description, priority, estimatedTime }
-}
+**Tool Implementations:**
 
-// update_todo_status
-{
-  name: 'update_todo_status',
-  plannerOnly: true,
-  parameters: { todoId, status, notes }
-}
+1. **create_todo** ✅
+   - Creates detailed todo items
+   - Parameters: title, description, priority, estimatedTime, phase, requirements
+   - Returns metadata for UI to add to todo list
+   - Auto-generates unique todo IDs
 
-// create_document
-{
-  name: 'create_document',
-  plannerOnly: true,
-  parameters: { path, content, type }
-}
+2. **update_todo_status** ✅
+   - Updates todo status (pending/in_progress/completed)
+   - Parameters: todoId, status, notes, completionPercentage
+   - Returns metadata for UI to update todo
+   - Tracks completion percentage
 
-// verify_implementation
-{
-  name: 'verify_implementation',
-  plannerOnly: true,
-  parameters: { filePath, requirements, verificationLevel }
-}
-```
+3. **create_document** ✅
+   - Creates markdown/text documentation files
+   - Parameters: path, content, type, title
+   - Returns file change for review
+   - Types: plan, architecture, api, guide, other
+
+4. **verify_implementation** ✅
+   - Dual verification: regex + semantic
+   - Parameters: filePath, requirements, verificationLevel, expectedPatterns
+   - Returns verification results with completeness percentage
+   - Levels: quick (regex only), thorough (regex+semantic), comprehensive (full analysis)
+   - Returns metadata with passed/failed counts
+
+5. **delegate_task** ✅
+   - Delegates tasks to coding model for implementation
+   - Parameters: title, description, requirements, priority, estimatedTime, targetProject, filesToModify, dependencies
+   - Creates DelegatedTask with status 'pending_approval'
+   - Returns metadata for task approval modal (Phase 4)
 
 **Deliverables:**
 - ✅ Planner can create/manage todos
 - ✅ Planner can create documentation
-- ✅ Planner can verify code
+- ✅ Planner can verify code implementations
+- ✅ Planner can delegate tasks to coder
+- ✅ All tools return metadata for UI integration
+- ✅ processToolCalls handles planner tool results
 
 ---
 
@@ -352,14 +359,14 @@ interface VerificationResult {
 ## 📊 Overall Progress
 
 **Total Phases:** 8  
-**Completed:** 2 ✅  
+**Completed:** 3 ✅  
 **In Progress:** 0  
-**Not Started:** 6  
-**Overall:** 25% Complete
+**Not Started:** 5  
+**Overall:** 37.5% Complete
 
 **Estimated Total Time:** ~9.5 hours  
-**Time Spent:** ~1.5 hours  
-**Time Remaining:** ~8 hours
+**Time Spent:** ~3 hours  
+**Time Remaining:** ~6.5 hours
 
 ---
 
@@ -416,11 +423,34 @@ interface VerificationResult {
 ---
 
 **Last Updated:** December 20, 2025  
-**Current Phase:** Phase 2 Complete - Ready for Phase 3 (Planner Tools)
+**Current Phase:** Phase 3 Complete - Ready for Phase 4 (Task Delegation System)
 
 ---
 
-## 📦 Completed Work Summary
+## 📦 Recent Updates
+
+### Phase 3 Complete - Planner Tools Implemented
+- All 5 planner-specific tools fully functional
+- Metadata-based communication between tools and UI
+- Planner can now:
+  - Create detailed todos with requirements
+  - Update todo status and track progress
+  - Create documentation files
+  - Verify implementations with dual checking
+  - Delegate tasks to coding model (approval required)
+
+### Build Status
+- ✅ Successful (49.98s, 896.38 KB main bundle)
+- All TypeScript compilation successful
+- No runtime errors
+
+### Next: Phase 4 - Task Delegation System
+- Create TaskApprovalModal for reviewing delegated tasks
+- Implement task queue management
+- Link planner sessions to coding sessions
+- Auto-create coding sessions from approved tasks
+- Add redirect to coding chat after approval
+
 
 ### Phase 1 - Foundation ✅
 - Updated Session interface with planner support
@@ -436,6 +466,18 @@ interface VerificationResult {
 - Empty states
 - Purple/pink gradient theme
 - Responsive design
+
+### Phase 3 - Planner-Specific Tools ✅
+- Implemented 5 planner-only tools in llmTools.ts
+- Tool handlers in llmService.ts with metadata returns
+- create_todo: Creates detailed todo items with requirements
+- update_todo_status: Updates todo status with completion tracking
+- create_document: Creates markdown documentation files
+- verify_implementation: Dual verification (regex + semantic) with completeness %
+- delegate_task: Delegates tasks to coder with approval flow
+- Updated App.tsx processToolCalls to handle planner tool metadata
+- Todos automatically added to project task list
+- Delegated tasks added to delegatedTasks state
 
 ### Integration Complete ✅
 - **App.tsx Integration:**

@@ -588,6 +588,7 @@ const App: React.FC = () => {
   const processToolCalls = (toolCalls: any[]) => {
     let newKnowledge = [...knowledgeBase];
     let newTodos = [...todoList];
+    let newDelegatedTasks = [...delegatedTasks];
 
     toolCalls.forEach(call => {
       if (call.name === 'save_knowledge') {
@@ -605,6 +606,39 @@ const App: React.FC = () => {
         else if (action === 'update' && taskId) newTodos = newTodos.map(t => t.id === taskId ? { ...t, status: status || t.status } : t);
         else if (action === 'complete' && taskId) newTodos = newTodos.map(t => t.id === taskId ? { ...t, status: 'completed' } : t);
         else if (action === 'delete' && taskId) newTodos = newTodos.filter(t => t.id !== taskId);
+      } else if (call.name === 'create_todo' && call.metadata) {
+        // Planner created a todo
+        const { todoId, title, description, priority, estimatedTime, phase, requirements, status } = call.metadata;
+        newTodos.push({
+          id: todoId,
+          task: title,
+          phase: phase || 'Planner',
+          status: status || 'pending'
+        });
+      } else if (call.name === 'update_todo_status' && call.metadata) {
+        // Planner updated a todo
+        const { todoId, status, completionPercentage } = call.metadata;
+        newTodos = newTodos.map(t => 
+          t.id === todoId 
+            ? { ...t, status: status || t.status } 
+            : t
+        );
+      } else if (call.name === 'delegate_task' && call.metadata) {
+        // Planner delegated a task
+        const { taskId, title, description, requirements, priority, estimatedTime, targetProject, filesToModify, dependencies } = call.metadata;
+        const newTask: DelegatedTask = {
+          id: taskId,
+          plannerSessionId: currentPlannerSessionId,
+          title,
+          description,
+          requirements: requirements || [],
+          estimatedTime,
+          priority,
+          status: 'pending_approval',
+          targetProjectId: targetProject === 'new' ? undefined : activeProject.id,
+          createdAt: Date.now()
+        };
+        newDelegatedTasks.push(newTask);
       }
     });
 
@@ -614,6 +648,9 @@ const App: React.FC = () => {
     if (JSON.stringify(newTodos) !== JSON.stringify(todoList)) {
       setTodoList(newTodos);
       setLeftPanelTab('todos');
+    }
+    if (newDelegatedTasks.length > delegatedTasks.length) {
+      setDelegatedTasks(newDelegatedTasks);
     }
   };
 

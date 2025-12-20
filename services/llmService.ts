@@ -582,6 +582,176 @@ const executeToolAction = (
       } else {
         toolOutput = `Error: Invalid manage_tasks parameters. action=${action}, task=${task}, taskId=${taskId}`;
       }
+    
+    // ===== PLANNER-ONLY TOOL HANDLERS =====
+    
+    } else if (toolName === 'create_todo') {
+      if (onStatusUpdate) onStatusUpdate(`📝 Creating todo: ${args.title}...`);
+      const { title, description, priority, estimatedTime, phase, requirements } = args;
+      
+      const todoId = `todo_${Date.now()}`;
+      const reqText = requirements && requirements.length > 0 
+        ? `\n\nRequirements:\n${requirements.map((r: string) => `  • ${r}`).join('\n')}`
+        : '';
+      
+      toolOutput = `✅ Created todo item:\n\n**${title}** [${priority.toUpperCase()}]\n${description}${reqText}\n\nEstimated time: ${estimatedTime || 'Not specified'}\nPhase: ${phase || 'General'}\nTodo ID: ${todoId}\n\nThis todo has been added to the project task list.`;
+      logger.logToolCall('create_todo', true, `Created todo: ${title}`);
+      
+      // Return metadata for UI processing
+      return {
+        output: toolOutput,
+        change: undefined,
+        metadata: {
+          type: 'todo_created',
+          todoId,
+          title,
+          description,
+          priority,
+          estimatedTime,
+          phase,
+          requirements,
+          status: 'pending'
+        }
+      };
+      
+    } else if (toolName === 'update_todo_status') {
+      if (onStatusUpdate) onStatusUpdate(`✏️ Updating todo status...`);
+      const { todoId, status, notes, completionPercentage } = args;
+      
+      const statusEmoji = status === 'completed' ? '✅' : status === 'in_progress' ? '🔄' : '⏳';
+      toolOutput = `${statusEmoji} Updated todo ${todoId}:\nNew status: ${status.replace('_', ' ').toUpperCase()}${notes ? `\nNotes: ${notes}` : ''}${completionPercentage !== undefined ? `\nCompletion: ${completionPercentage}%` : ''}`;
+      logger.logToolCall('update_todo_status', true, `Updated todo ${todoId} to ${status}`);
+      
+      return {
+        output: toolOutput,
+        change: undefined,
+        metadata: {
+          type: 'todo_updated',
+          todoId,
+          status,
+          notes,
+          completionPercentage
+        }
+      };
+      
+    } else if (toolName === 'create_document') {
+      if (onStatusUpdate) onStatusUpdate(`📄 Creating document: ${args.path}...`);
+      const { path, content, type, title } = args;
+      
+      // Create document file
+      change = {
+        id: Date.now().toString(),
+        fileName: path,
+        originalContent: '',
+        newContent: content,
+        type: 'create' as const
+      };
+      
+      toolOutput = `📄 Created documentation file: ${path}\nType: ${type || 'document'}\n${title ? `Title: ${title}\n` : ''}\nThe document has been created and will be saved to the project.`;
+      logger.logToolCall('create_document', true, `Created document: ${path}`);
+      
+    } else if (toolName === 'verify_implementation') {
+      if (onStatusUpdate) onStatusUpdate(`🔍 Verifying implementation in ${args.filePath}...`);
+      const { filePath, requirements, verificationLevel = 'thorough', expectedPatterns } = args;
+      
+      const file = files.find(f => f.name === filePath);
+      if (!file) {
+        toolOutput = `❌ Verification failed: File "${filePath}" not found.\n\nAvailable files:\n${files.map(f => f.name).join('\n')}`;
+        logger.logToolCall('verify_implementation', false, `File not found: ${filePath}`);
+      } else {
+        const results: string[] = [];
+        let passedCount = 0;
+        let failedCount = 0;
+        
+        // Regex verification (always performed)
+        if (expectedPatterns && expectedPatterns.length > 0) {
+          results.push('\n📋 Pattern Verification (Regex):');
+          expectedPatterns.forEach((pattern: string) => {
+            const regex = new RegExp(pattern, 'i');
+            const found = regex.test(file.content);
+            if (found) {
+              results.push(`  ✅ Found pattern: ${pattern}`);
+              passedCount++;
+            } else {
+              results.push(`  ❌ Missing pattern: ${pattern}`);
+              failedCount++;
+            }
+          });
+        }
+        
+        // Requirements verification (semantic - simulated here, real AI would analyze)
+        results.push('\n📝 Requirements Verification:');
+        requirements.forEach((req: string) => {
+          // Simple heuristic: check if requirement keywords are in code
+          const keywords = req.toLowerCase().split(' ').filter(w => w.length > 3);
+          const codeContent = file.content.toLowerCase();
+          const foundKeywords = keywords.filter(kw => codeContent.includes(kw));
+          const matchPercentage = keywords.length > 0 ? (foundKeywords.length / keywords.length) * 100 : 0;
+          
+          if (matchPercentage >= 70) {
+            results.push(`  ✅ ${req} (${Math.round(matchPercentage)}% match)`);
+            passedCount++;
+          } else {
+            results.push(`  ⚠️  ${req} (${Math.round(matchPercentage)}% match - needs review)`);
+            failedCount++;
+          }
+        });
+        
+        const completeness = passedCount > 0 ? Math.round((passedCount / (passedCount + failedCount)) * 100) : 0;
+        const status = completeness >= 80 ? '✅ PASSED' : completeness >= 50 ? '⚠️  PARTIAL' : '❌ FAILED';
+        
+        toolOutput = `🔍 Verification Results for ${filePath}\n\nVerification Level: ${verificationLevel}\nCompleteness: ${completeness}%\nStatus: ${status}\n${results.join('\n')}\n\n📊 Summary: ${passedCount} passed, ${failedCount} need attention`;
+        logger.logToolCall('verify_implementation', true, `Verified ${filePath}: ${completeness}% complete`);
+        
+        return {
+          output: toolOutput,
+          change: undefined,
+          metadata: {
+            type: 'verification_result',
+            filePath,
+            passed: completeness >= 80,
+            completeness,
+            passedCount,
+            failedCount,
+            verificationLevel
+          }
+        };
+      }
+      
+    } else if (toolName === 'delegate_task') {
+      if (onStatusUpdate) onStatusUpdate(`🚀 Delegating task: ${args.title}...`);
+      const { title, description, requirements, priority, estimatedTime, targetProject, filesToModify, dependencies } = args;
+      
+      const taskId = `task_${Date.now()}`;
+      const reqList = requirements.map((r: string) => `  • ${r}`).join('\n');
+      const filesList = filesToModify && filesToModify.length > 0 
+        ? `\n\nFiles to modify:\n${filesToModify.map((f: string) => `  • ${f}`).join('\n')}`
+        : '';
+      const depsList = dependencies && dependencies.length > 0
+        ? `\n\nDependencies:\n${dependencies.map((d: string) => `  • ${d}`).join('\n')}`
+        : '';
+      
+      toolOutput = `🚀 Task Delegation Request Created\n\n**${title}** [${priority.toUpperCase()}]\n\n${description}\n\nRequirements:\n${reqList}${filesList}${depsList}\n\nEstimated time: ${estimatedTime || 'Not specified'}\nTarget: ${targetProject || 'Current project'}\nTask ID: ${taskId}\n\n⏸️  This task will be presented to the user for approval before execution.`;
+      logger.logToolCall('delegate_task', true, `Delegated task: ${title}`);
+      
+      return {
+        output: toolOutput,
+        change: undefined,
+        metadata: {
+          type: 'task_delegated',
+          taskId,
+          title,
+          description,
+          requirements,
+          priority,
+          estimatedTime,
+          targetProject,
+          filesToModify,
+          dependencies,
+          status: 'pending_approval'
+        }
+      };
+      
     } else if (toolName === 'replace_section') {
       if (onStatusUpdate) onStatusUpdate(`✏️ Replacing lines ${args.startLine}-${args.endLine} in ${args.fileName}...`);
       const f = files.find(file => file.name === args.fileName);

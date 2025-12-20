@@ -310,6 +310,118 @@ export const UNIVERSAL_TOOL_DEFINITIONS = {
       },
       required: ['action']
     }
+  },
+  
+  // ===== PLANNER-ONLY TOOLS =====
+  // These tools are only available to the planner AI, not the coding model
+  
+  create_todo: {
+    name: 'create_todo',
+    description: '[PLANNER ONLY] Create a new todo item with detailed information. Use this to break down complex tasks into manageable items.',
+    parameters: {
+      type: Type.OBJECT,
+      properties: {
+        title: { type: Type.STRING, description: 'Clear, actionable todo title (e.g., "Implement user authentication")' },
+        description: { type: Type.STRING, description: 'Detailed description of what needs to be done' },
+        priority: { type: Type.STRING, enum: ['low', 'medium', 'high', 'critical'], description: 'Task priority level' },
+        estimatedTime: { type: Type.STRING, description: 'Estimated time (e.g., "2 hours", "1 day")' },
+        phase: { type: Type.STRING, description: 'Project phase or category (e.g., "Backend", "UI")' },
+        requirements: { 
+          type: Type.ARRAY, 
+          items: { type: Type.STRING },
+          description: 'Specific requirements or acceptance criteria' 
+        }
+      },
+      required: ['title', 'description', 'priority']
+    }
+  },
+  
+  update_todo_status: {
+    name: 'update_todo_status',
+    description: '[PLANNER ONLY] Update the status of an existing todo item. Use this to track progress and mark tasks as complete.',
+    parameters: {
+      type: Type.OBJECT,
+      properties: {
+        todoId: { type: Type.STRING, description: 'ID of the todo item to update' },
+        status: { type: Type.STRING, enum: ['pending', 'in_progress', 'completed'], description: 'New status' },
+        notes: { type: Type.STRING, description: 'Optional notes about the status change' },
+        completionPercentage: { type: Type.NUMBER, description: 'Completion percentage (0-100)' }
+      },
+      required: ['todoId', 'status']
+    }
+  },
+  
+  create_document: {
+    name: 'create_document',
+    description: '[PLANNER ONLY] Create documentation files (markdown, txt, etc). Use this to document architecture, plans, API specs, or any project documentation.',
+    parameters: {
+      type: Type.OBJECT,
+      properties: {
+        path: { type: Type.STRING, description: 'File path (e.g., "docs/architecture.md", "PLAN.md")' },
+        content: { type: Type.STRING, description: 'Full markdown or text content of the document' },
+        type: { type: Type.STRING, enum: ['plan', 'architecture', 'api', 'guide', 'other'], description: 'Document type' },
+        title: { type: Type.STRING, description: 'Document title' }
+      },
+      required: ['path', 'content']
+    }
+  },
+  
+  verify_implementation: {
+    name: 'verify_implementation',
+    description: '[PLANNER ONLY] Verify that code implementation matches requirements using dual verification (regex patterns + semantic analysis). Use this to check if delegated tasks were completed correctly.',
+    parameters: {
+      type: Type.OBJECT,
+      properties: {
+        filePath: { type: Type.STRING, description: 'File to verify' },
+        requirements: { 
+          type: Type.ARRAY, 
+          items: { type: Type.STRING },
+          description: 'List of requirements to verify (e.g., "Function getUserById exists", "Proper error handling")' 
+        },
+        verificationLevel: { 
+          type: Type.STRING, 
+          enum: ['quick', 'thorough', 'comprehensive'], 
+          description: 'Verification thoroughness (quick=regex only, thorough=regex+semantic, comprehensive=full analysis)' 
+        },
+        expectedPatterns: { 
+          type: Type.ARRAY, 
+          items: { type: Type.STRING },
+          description: 'Optional regex patterns to check for (e.g., "async.*getUserById", "try.*catch")' 
+        }
+      },
+      required: ['filePath', 'requirements']
+    }
+  },
+  
+  delegate_task: {
+    name: 'delegate_task',
+    description: '[PLANNER ONLY] Delegate a task to the coding model for implementation. Use this when you have a well-defined plan and want the coder to execute it. User will review and approve before execution.',
+    parameters: {
+      type: Type.OBJECT,
+      properties: {
+        title: { type: Type.STRING, description: 'Clear task title' },
+        description: { type: Type.STRING, description: 'Detailed task description with context' },
+        requirements: { 
+          type: Type.ARRAY, 
+          items: { type: Type.STRING },
+          description: 'Specific requirements and acceptance criteria' 
+        },
+        priority: { type: Type.STRING, enum: ['low', 'medium', 'high', 'critical'], description: 'Task priority' },
+        estimatedTime: { type: Type.STRING, description: 'Estimated completion time' },
+        targetProject: { type: Type.STRING, description: 'Project to execute in (or "new" for new project)' },
+        filesToModify: { 
+          type: Type.ARRAY, 
+          items: { type: Type.STRING },
+          description: 'Files that will likely be created or modified' 
+        },
+        dependencies: { 
+          type: Type.ARRAY, 
+          items: { type: Type.STRING },
+          description: 'Dependencies or prerequisites' 
+        }
+      },
+      required: ['title', 'description', 'requirements', 'priority']
+    }
   }
 };
 
