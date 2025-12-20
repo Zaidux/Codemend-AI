@@ -19,6 +19,7 @@ import { SnippetsLibrary } from './components/SnippetsLibrary';
 import { GitHubAuthModal } from './components/GitHubAuthModal'; 
 import { MultiDiffViewer } from './components/MultiDiffViewer';
 import { PlannerRoom } from './components/PlannerRoom';
+import { TaskApprovalModal } from './components/TaskApprovalModal';
 
 import { THEMES, DEFAULT_LLM_CONFIG, DEFAULT_ROLES } from './constants';
 import { GitHubService, parseGitHubUrl, GitHubFile } from './services/githubApiService';
@@ -863,7 +864,104 @@ const App: React.FC = () => {
 
   const handleDelegateTask = (task: DelegatedTask) => {
     setDelegatedTasks(prev => [...prev, task]);
-    // This will be expanded in Phase 4 with approval modal
+  };
+
+  // Get the first pending approval task
+  const pendingApprovalTask = delegatedTasks.find(t => t.status === 'pending_approval');
+
+  const handleApproveTask = (task: DelegatedTask) => {
+    // Update task status to approved
+    setDelegatedTasks(prev =>
+      prev.map(t => t.id === task.id ? { ...t, status: 'approved', startedAt: Date.now() } : t)
+    );
+
+    // Create or find target project
+    let targetProject = activeProject;
+    if (task.targetProjectId && task.targetProjectId !== 'new') {
+      const foundProject = projects.find(p => p.name === task.targetProjectId || p.id === task.targetProjectId);
+      if (foundProject) {
+        targetProject = foundProject;
+        setCurrentProjectId(foundProject.id);
+      }
+    } else if (task.targetProjectId === 'new') {
+      // Create new project
+      const newProj = createNewProject();
+      newProj.name = task.title.slice(0, 30); // Use task title as project name
+      setProjects(prev => [...prev, newProj]);
+      setCurrentProjectId(newProj.id);
+      targetProject = newProj;
+    }
+
+    // Create new coding session for this task
+    const newSession = createNewSession(targetProject.id);
+    newSession.title = task.title;
+    newSession.type = 'delegated';
+    newSession.plannerSessionId = task.plannerSessionId;
+    
+    // Create initial message with full task context
+    const taskMessage: ChatMessage = {
+      id: crypto.randomUUID(),
+      role: 'user',
+      content: `# Delegated Task from Planner\n\n## ${task.title}\n\n${task.description}\n\n### Requirements:\n${task.requirements.map(r => `- ${r}`).join('\n')}\n\n${task.filesToModify && task.filesToModify.length > 0 ? `### Files to Modify:\n${task.filesToModify.map(f => `- ${f}`).join('\n')}\n\n` : ''}${task.dependencies && task.dependencies.length > 0 ? `### Dependencies:\n${task.dependencies.map(d => `- ${d}`).join('\n')}\n\n` : ''}Please implement this task according to the requirements. Priority: ${task.priority.toUpperCase()}${task.estimatedTime ? ` | Estimated Time: ${task.estimatedTime}` : ''}`,
+      timestamp: Date.now()
+    };
+
+    newSession.messages = [taskMessage];
+    setSessions(prev => [...prev, newSession]);
+    
+    // Update task with coding session ID
+    setDelegatedTasks(prev =>
+      prev.map(t => t.id === task.id ? { ...t, codingSessionId: newSession.id, status: 'in_progress' } : t)
+    );
+
+    // Switch to coding session
+    setCurrentSessionId(newSession.id);
+    setShowPlannerRoom(false);
+
+    // Auto-send the task to the AI
+    handleSendMessage('', [], newSession.id);
+  };
+
+  const handleEditTask = (task: DelegatedTask, feedback: string) => {
+    // Remove task from delegated tasks (or mark as rejected)
+    setDelegatedTasks(prev => prev.filter(t => t.id !== task.id));
+
+    // Switch to planner room
+    setShowPlannerRoom(true);
+
+    // Find or create planner session
+    let plannerSession = plannerSessions.find(s => s.id === task.plannerSessionId);
+    if (!plannerSession) {
+      plannerSession = createNewSession('');
+      plannerSession.type = 'planner';
+      plannerSession.title = 'Planning Session';
+      setPlannerSessions(prev => [...prev, plannerSession!]);
+      setCurrentPlannerSessionId(plannerSession.id);
+    } else {
+      setCurrentPlannerSessionId(plannerSession.id);
+    }
+
+    // Add feedback message to planner session
+    const feedbackMessage: ChatMessage = {
+      id: crypto.randomUUID(),
+      role: 'user',
+      content: `I've reviewed the delegated task "${task.title}" and have some feedback:\n\n${feedback}\n\nPlease revise the plan accordingly.`,
+      timestamp: Date.now()
+    };
+
+    setPlannerSessions(prev =>
+      prev.map(s => s.id === plannerSession!.id
+        ? { ...s, messages: [...s.messages, feedbackMessage], lastModified: Date.now() }
+        : s
+      )
+    );
+
+    // Auto-send to planner AI
+    handlePlannerMessage(feedbackMessage.content, [], plannerSession.id);
+  };
+
+  const handleCancelTask = (taskId: string) => {
+    setDelegatedTasks(prev => prev.filter(t => t.id !== taskId));
   };
 
   // --- RENDER ---
@@ -1367,6 +1465,16 @@ const App: React.FC = () => {
         isLoading={isLoading}
         onSendMessage={handlePlannerMessage}
       />
+
+      {/* Task Approval Modal */}
+      {pendingApprovalTask && (
+        <TaskApprovalModal
+          task={pendingApprovalTask}
+          onApprove={handleApproveTask}
+          onEdit={handleEditTask}
+          onCancel={handleCancelTask}
+        />
+      )}
 
       {/* Multi Diff Viewer */}
       {showMultiDiff && multiDiffChanges.length > 0 && (
