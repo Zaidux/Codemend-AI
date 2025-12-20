@@ -23,6 +23,11 @@ export const useTerminal = (projectFiles: ProjectFile[] = []) => {
   const outputEndRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
 
+  // Save custom commands to localStorage whenever they change
+  useEffect(() => {
+    localStorage.setItem('cm_custom_terminal_commands', JSON.stringify(customCommands));
+  }, [customCommands]);
+
   // Auto-scroll to bottom when output changes
   useEffect(() => {
     if (state.autoScroll && outputEndRef.current) {
@@ -92,8 +97,25 @@ export const useTerminal = (projectFiles: ProjectFile[] = []) => {
           executeHelpCommand();
           break;
         
+        case 'addcmd':
+          executeAddCustomCommand(args);
+          break;
+        
+        case 'listcmds':
+          executeListCustomCommands();
+          break;
+        
+        case 'removecmd':
+          executeRemoveCustomCommand(args[0]);
+          break;
+        
         default:
-          addOutput(`Command not found: ${cmd}. Type 'help' for available commands.`, 'error');
+          // Check if it's a custom command
+          if (customCommands[cmd]) {
+            executeCustomCommand(cmd, args);
+          } else {
+            addOutput(`Command not found: ${cmd}. Type 'help' for available commands.`, 'error');
+          }
       }
     } catch (error: any) {
       addOutput(`Error: ${error.message}`, 'error');
@@ -185,14 +207,118 @@ export const useTerminal = (projectFiles: ProjectFile[] = []) => {
       { command: 'ls, dir', description: 'List all files in the project' },
       { command: 'cat <file>', description: 'Display content of a file' },
       { command: 'clear', description: 'Clear terminal output' },
-      { command: 'help', description: 'Show this help message' }
+      { command: 'help', description: 'Show this help message' },
+      { command: 'addcmd <name> <script>', description: 'Add a custom command' },
+      { command: 'listcmds', description: 'List all custom commands' },
+      { command: 'removecmd <name>', description: 'Remove a custom command' }
     ];
 
-    addOutput('Available commands:');
-    commands.forEach(cmd => {
-      addOutput(`  ${cmd.command.padEnd(15)} ${cmd.description}`);
+    addOutput('Available Commands:', 'info');
+    addOutput('─'.repeat(60));
+    commands.forEach(({ command, description }) => {
+      addOutput(`  ${command.padEnd(25)} ${description}`);
     });
+    addOutput('─'.repeat(60));
+    
+    const customCmdCount = Object.keys(customCommands).length;
+    if (customCmdCount > 0) {
+      addOutput(`\nYou have ${customCmdCount} custom command(s). Type 'listcmds' to see them.`, 'info');
+    }
+  }, [addOutput, customCommands]);
+
+  // Add custom command
+  const executeAddCustomCommand = useCallback((args: string[]) => {
+    if (args.length < 2) {
+      addOutput('Usage: addcmd <name> <script>', 'error');
+      addOutput('Example: addcmd hello echo "Hello World"', 'info');
+      return;
+    }
+
+    const [name, ...scriptParts] = args;
+    const script = scriptParts.join(' ');
+
+    if (name.match(/^(run|ls|dir|cat|type|clear|help|addcmd|listcmds|removecmd)$/)) {
+      addOutput(`Cannot override built-in command: ${name}`, 'error');
+      return;
+    }
+
+    setCustomCommands(prev => ({ ...prev, [name]: script }));
+    addOutput(`✅ Custom command '${name}' added successfully!`, 'info');
+    addOutput(`   Run it by typing: ${name}`, 'info');
   }, [addOutput]);
+
+  // List custom commands
+  const executeListCustomCommands = useCallback(() => {
+    const cmds = Object.entries(customCommands);
+    
+    if (cmds.length === 0) {
+      addOutput('No custom commands defined.', 'info');
+      addOutput('Add one with: addcmd <name> <script>', 'info');
+      return;
+    }
+
+    addOutput('Custom Commands:', 'info');
+    addOutput('─'.repeat(60));
+    cmds.forEach(([name, script]) => {
+      addOutput(`  ${name.padEnd(20)} → ${script}`);
+    });
+    addOutput('─'.repeat(60));
+    addOutput(`Total: ${cmds.length} custom command(s)`, 'info');
+  }, [addOutput, customCommands]);
+
+  // Remove custom command
+  const executeRemoveCustomCommand = useCallback((name: string) => {
+    if (!name) {
+      addOutput('Usage: removecmd <name>', 'error');
+      return;
+    }
+
+    if (!customCommands[name]) {
+      addOutput(`Custom command not found: ${name}`, 'error');
+      return;
+    }
+
+    setCustomCommands(prev => {
+      const newCmds = { ...prev };
+      delete newCmds[name];
+      return newCmds;
+    });
+    addOutput(`✅ Custom command '${name}' removed`, 'info');
+  }, [addOutput, customCommands]);
+
+  // Execute custom command
+  const executeCustomCommand = useCallback(async (name: string, args: string[]) => {
+    const script = customCommands[name];
+    addOutput(`Executing custom command: ${name}`, 'info');
+    
+    // Replace placeholders in script
+    let processedScript = script;
+    args.forEach((arg, index) => {
+      processedScript = processedScript.replace(`$${index + 1}`, arg);
+      processedScript = processedScript.replace('$*', args.join(' '));
+    });
+
+    // Execute the script as a command
+    const [cmd, ...cmdArgs] = processedScript.split(/\s+/);
+    
+    switch (cmd.toLowerCase()) {
+      case 'echo':
+        addOutput(cmdArgs.join(' '));
+        break;
+      case 'run':
+        await executeCodeCommand('run', cmdArgs);
+        break;
+      case 'ls':
+      case 'dir':
+        executeListCommand();
+        break;
+      case 'cat':
+        executeCatCommand(cmdArgs[0]);
+        break;
+      default:
+        addOutput(`Custom command output: ${processedScript}`);
+    }
+  }, [customCommands, addOutput]);
 
   // Navigate command history
   const navigateHistory = useCallback((direction: 'up' | 'down') => {
@@ -291,6 +417,9 @@ export const useTerminal = (projectFiles: ProjectFile[] = []) => {
     clearOutput,
     toggleAutoScroll,
     getAIHelp,
+    
+    // Custom commands
+    customCommands,
     
     // Derived state
     hasErrors: state.output.some(line => line.type === 'error'),
