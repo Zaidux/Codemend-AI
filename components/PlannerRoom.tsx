@@ -261,6 +261,23 @@ export const PlannerRoom: React.FC<PlannerRoomProps> = ({
                       </div>
                     )}
 
+                    {/* Verification Results */}
+                    {task.verificationResults && task.verificationResults.length > 0 && (
+                      <div className="mt-2 pt-2 border-t border-white/10">
+                        <div className="flex items-center gap-1 text-xs mb-1">
+                          <CheckCircle className="w-3 h-3" />
+                          <span className="font-semibold">Verification:</span>
+                        </div>
+                        {task.verificationResults.map((result, idx) => (
+                          <div key={idx} className="text-xs opacity-80">
+                            <span className={result.passed ? 'text-green-400' : 'text-yellow-400'}>
+                              {result.passed ? '✅' : '⚠️'} {result.completeness}% complete
+                            </span>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+
                     <div className="mt-2 flex items-center justify-between text-xs opacity-60">
                       <span>{task.status.replace('_', ' ').toUpperCase()}</span>
                       {task.estimatedTime && <span>{task.estimatedTime}</span>}

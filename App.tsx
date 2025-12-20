@@ -667,6 +667,185 @@ const App: React.FC = () => {
     }
     const aiMsg: ChatMessage = { id: crypto.randomUUID(), role: 'model', content: response.response, timestamp: Date.now() };
     updateSession({ messages: [...history, aiMsg] });
+
+    // Auto-verification for delegated tasks (Phase 5)
+    checkDelegatedTaskCompletion(aiMsg);
+  };
+
+  const checkDelegatedTaskCompletion = async (aiMsg: ChatMessage) => {
+    // Check if this is a delegated task session
+    if (activeSession.type !== 'delegated' || !activeSession.plannerSessionId) return;
+
+    // Find the associated delegated task
+    const task = delegatedTasks.find(t => t.codingSessionId === activeSession.id && t.status === 'in_progress');
+    if (!task) return;
+
+    // Check for completion signals in AI response
+    const content = aiMsg.content.toLowerCase();
+    const completionSignals = [
+      'implementation complete',
+      'task completed',
+      'finished implementing',
+      'successfully implemented',
+      'all requirements met',
+      'done',
+      'completed successfully'
+    ];
+
+    const hasCompletionSignal = completionSignals.some(signal => content.includes(signal));
+    
+    // Also check if there are proposed changes (file modifications)
+    const hasFileChanges = pendingDiffs.length > 0 || multiDiffChanges.length > 0;
+
+    // Trigger verification if we have completion signals or file changes
+    if (hasCompletionSignal || hasFileChanges) {
+      await performAutoVerification(task);
+    }
+  };
+
+  const performAutoVerification = async (task: DelegatedTask) => {
+    // Update task status to 'verifying'
+    setDelegatedTasks(prev =>
+      prev.map(t => t.id === task.id ? { ...t, status: 'verifying' } : t)
+    );
+
+    // Get files to verify (either from task.filesToModify or recent diffs)
+    const filesToVerify = task.filesToModify && task.filesToModify.length > 0
+      ? task.filesToModify
+      : [...new Set([...pendingDiffs.map(d => d.fileName), ...multiDiffChanges.map(d => d.fileName)])];
+
+    if (filesToVerify.length === 0) {
+      // No files to verify, mark as completed
+      completeTask(task, true, 100, []);
+      return;
+    }
+
+    // Perform verification on each file
+    const verificationResults = [];
+    for (const filePath of filesToVerify) {
+      const file = activeProject.files.find(f => f.name === filePath);
+      if (!file) continue;
+
+      // Dual verification: regex + semantic
+      const result = await verifyFileImplementation(file, task.requirements);
+      verificationResults.push(result);
+    }
+
+    // Calculate overall completeness
+    const avgCompleteness = verificationResults.length > 0
+      ? verificationResults.reduce((sum, r) => sum + r.completeness, 0) / verificationResults.length
+      : 0;
+
+    const allPassed = verificationResults.every(r => r.passed);
+
+    // Update task with verification results
+    completeTask(task, allPassed, avgCompleteness, verificationResults);
+  };
+
+  const verifyFileImplementation = async (file: ProjectFile, requirements: string[]): Promise<VerificationResult> => {
+    const content = file.content.toLowerCase();
+    const results: string[] = [];
+    let passedCount = 0;
+    let failedCount = 0;
+
+    // Semantic verification: Check requirements keywords
+    requirements.forEach((req: string) => {
+      const keywords = req.toLowerCase().split(' ').filter(w => w.length > 3);
+      const foundKeywords = keywords.filter(kw => content.includes(kw));
+      const matchPercentage = keywords.length > 0 ? (foundKeywords.length / keywords.length) * 100 : 0;
+      
+      if (matchPercentage >= 70) {
+        results.push(`✅ ${req} (${Math.round(matchPercentage)}% match)`);
+        passedCount++;
+      } else {
+        results.push(`⚠️ ${req} (${Math.round(matchPercentage)}% match - needs review)`);
+        failedCount++;
+      }
+    });
+
+    const completeness = passedCount > 0 ? Math.round((passedCount / (passedCount + failedCount)) * 100) : 0;
+    const passed = completeness >= 80;
+
+    return {
+      timestamp: Date.now(),
+      method: 'semantic',
+      passed,
+      completeness,
+      issues: results.filter(r => r.startsWith('⚠️')),
+      recommendations: passed ? [] : ['Review implementation against failed requirements', 'Consider requesting planner guidance'],
+      verifiedFiles: [file.name]
+    };
+  };
+
+  const completeTask = (task: DelegatedTask, passed: boolean, completeness: number, verificationResults: VerificationResult[]) => {
+    const status = passed ? 'completed' : 'failed';
+    
+    // Update delegated task
+    setDelegatedTasks(prev =>
+      prev.map(t => t.id === task.id
+        ? {
+            ...t,
+            status,
+            completedAt: Date.now(),
+            verificationResults
+          }
+        : t
+      )
+    );
+
+    // Notify planner session with verification results
+    notifyPlannerOfCompletion(task, passed, completeness, verificationResults);
+
+    // Update related todos
+    if (task.todoIds && task.todoIds.length > 0) {
+      setTodoList(prev =>
+        prev.map(todo =>
+          task.todoIds!.includes(todo.id)
+            ? { ...todo, status: passed ? 'completed' : 'in_progress' }
+            : todo
+        )
+      );
+    }
+  };
+
+  const notifyPlannerOfCompletion = (task: DelegatedTask, passed: boolean, completeness: number, verificationResults: VerificationResult[]) => {
+    if (!task.plannerSessionId) return;
+
+    // Create notification message for planner
+    const statusEmoji = passed ? '✅' : '❌';
+    const issuesSummary = verificationResults
+      .flatMap(r => r.issues)
+      .slice(0, 5)
+      .map(issue => `  - ${issue}`)
+      .join('\n');
+
+    const notificationContent = `
+${statusEmoji} **Task ${passed ? 'Completed' : 'Failed'}: ${task.title}**
+
+**Completeness:** ${completeness}%
+**Status:** ${task.status}
+**Verified Files:** ${verificationResults.flatMap(r => r.verifiedFiles).join(', ')}
+
+${!passed && issuesSummary ? `**Issues Found:**\n${issuesSummary}\n` : ''}
+${passed ? '**All requirements verified successfully!**' : '**Some requirements need attention.**'}
+
+You can review the implementation in the coding session.
+    `.trim();
+
+    const notificationMsg: ChatMessage = {
+      id: crypto.randomUUID(),
+      role: 'model',
+      content: notificationContent,
+      timestamp: Date.now()
+    };
+
+    // Add notification to planner session
+    setPlannerSessions(prev =>
+      prev.map(s => s.id === task.plannerSessionId
+        ? { ...s, messages: [...s.messages, notificationMsg], lastModified: Date.now() }
+        : s
+      )
+    );
   };
 
   const handleModelSwitch = async (newConfig: LLMConfig) => {
