@@ -1,6 +1,6 @@
 import * as React from 'react';
 import { useState, useEffect, useRef } from 'react';
-import { Sparkles, Play, Wrench, X, Settings, Send, Sidebar as SidebarIcon, Code2, ArrowLeft, Eye, Image as ImageIcon, Mic, StopCircle, BookOpen, Globe, Brain, ListTodo, GitCompare, Plus, Zap, RefreshCw, Pencil } from 'lucide-react';
+import { Sparkles, Play, Wrench, X, Settings, Send, Sidebar as SidebarIcon, Code2, ArrowLeft, Eye, Image as ImageIcon, Mic, StopCircle, BookOpen, Globe, Brain, ListTodo, GitCompare, Plus, Zap, RefreshCw, Pencil, AlertTriangle } from 'lucide-react';
 
 import Header from './components/Header';
 import MarkdownRenderer from './components/MarkdownRenderer';
@@ -568,6 +568,8 @@ const App: React.FC = () => {
             handleDeleteFile={handleDeleteFile} updateProject={updateProject} setKnowledgeBase={setKnowledgeBase}
             viewMode={viewMode} setIsEditorOpen={setIsEditorOpen}
             setProjects={setProjects} // <--- ADDED THIS PROP
+            setShowToolsModal={setShowToolsModal}
+            setShowGitTracker={setShowGitTracker}
         />
       )}
 
@@ -617,7 +619,7 @@ const App: React.FC = () => {
                          style={{minHeight: '80px'}}
                        />
                        {/* Photo and Microphone buttons for classic mode */}
-                       <div className="flex flex-col gap-1 absolute left-2 top-2 z-10">
+                       <div className="flex flex-wrap gap-1 absolute left-2 top-2 z-10 max-w-[calc(100%-100px)]">
                          <input type="file" ref={imageInputRef} onChange={handleImageUpload} accept="image/*" className="hidden" />
                          <button onClick={() => imageInputRef.current?.click()} className={`${theme.textMuted} hover:text-white p-1.5 rounded-full hover:bg-white/10 transition-colors`} title="Upload image"><ImageIcon className="w-4 h-4" /></button>
                          <input type="file" ref={fileInputRef} onChange={handleFileUpload} accept=".txt,.js,.ts,.jsx,.tsx,.html,.css,.py,.java,.json" className="hidden" />
@@ -692,7 +694,27 @@ const App: React.FC = () => {
                                     </button>
                                 </div>
                             ) : (
-                              <MarkdownRenderer content={msg.content} theme={theme} />
+                              <div>
+                                <MarkdownRenderer content={msg.content} theme={theme} />
+                                {/* Show tool errors as copyable text blocks */}
+                                {msg.content.includes('Error:') && msg.content.includes('Tool') && (
+                                  <div className="mt-3 p-3 rounded-lg bg-red-500/10 border border-red-500/30">
+                                    <div className="flex items-start gap-2">
+                                      <AlertTriangle className="w-4 h-4 text-red-400 mt-0.5 flex-shrink-0" />
+                                      <div className="flex-1 min-w-0">
+                                        <p className="text-xs font-semibold text-red-400 mb-1">Tool Execution Error</p>
+                                        <pre className="text-xs text-red-300 whitespace-pre-wrap font-mono overflow-x-auto">{msg.content.match(/Error:.*$/m)?.[0] || 'Unknown error'}</pre>
+                                        <button 
+                                          onClick={() => navigator.clipboard.writeText(msg.content)}
+                                          className="mt-2 text-xs px-2 py-1 rounded bg-red-500/20 text-red-400 hover:bg-red-500/30 transition-colors"
+                                        >
+                                          Copy Full Error
+                                        </button>
+                                      </div>
+                                    </div>
+                                  </div>
+                                )}
+                              </div>
                             )}
                         </div>
 

@@ -16,7 +16,9 @@ import {
   Loader2, 
   Archive, 
   MoreVertical, 
-  Edit3 
+  Edit3,
+  Wrench,
+  GitCompare 
 } from 'lucide-react';
 import { Project, Session, KnowledgeEntry, ProjectFile } from '../types';
 import KnowledgeBase from './KnowledgeBase';
@@ -54,6 +56,8 @@ interface AppSidebarProps {
   setIsEditorOpen: (open: boolean) => void;
   // FIX: Make setProjects optional with fallback
   setProjects?: (projects: Project[]) => void;
+  setShowToolsModal?: (show: boolean) => void;
+  setShowGitTracker?: (show: boolean) => void;
 }
 
 interface FileNode {
@@ -420,6 +424,12 @@ const AppSidebar: React.FC<AppSidebarProps> = (props) => {
          <button onClick={() => setActiveTab('chats')} className={`flex-1 py-3 border-b-2 flex justify-center ${activeTab === 'chats' ? `${theme.accent} border-${theme.accent.replace('text-', '')}` : 'border-transparent text-gray-500 hover:text-white'}`}><MessageSquare className="w-4 h-4" /></button>
          <button onClick={() => setActiveTab('files')} className={`flex-1 py-3 border-b-2 flex justify-center ${activeTab === 'files' ? `${theme.accent} border-${theme.accent.replace('text-', '')}` : 'border-transparent text-gray-500 hover:text-white'}`}><FolderOpen className="w-4 h-4" /></button>
          <button onClick={() => setActiveTab('knowledge')} className={`flex-1 py-3 border-b-2 flex justify-center ${activeTab === 'knowledge' ? `${theme.accent} border-${theme.accent.replace('text-', '')}` : 'border-transparent text-gray-500 hover:text-white'}`}><Book className="w-4 h-4" /></button>
+         {props.setShowToolsModal && (
+           <button onClick={() => props.setShowToolsModal!(true)} className={`flex-1 py-3 border-b-2 flex justify-center border-transparent text-gray-500 hover:text-blue-400`} title="AI Tools"><Wrench className="w-4 h-4" /></button>
+         )}
+         {props.setShowGitTracker && (
+           <button onClick={() => props.setShowGitTracker!(true)} className={`flex-1 py-3 border-b-2 flex justify-center border-transparent text-gray-500 hover:text-green-400`} title="Git Tracker"><GitCompare className="w-4 h-4" /></button>
+         )}
       </div>
 
       <div className="flex-1 overflow-y-auto custom-scrollbar relative">

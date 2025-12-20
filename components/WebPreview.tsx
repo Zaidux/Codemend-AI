@@ -98,6 +98,27 @@ const WebPreview: React.FC<WebPreviewProps> = ({ files, theme }) => {
           timestamp: new Date().toLocaleTimeString()
         }]);
       } else if (data.type === 'network') {
+        setNetworkRequests(prev => [...prev.slice(-19), {
+          method: data.method,
+          url: data.url,
+          status: data.status,
+          duration: data.duration,
+          timestamp: new Date().toLocaleTimeString()
+        }]);
+      } else if (data.type === 'error') {
+        // Capture runtime errors
+        setRuntimeError(data.message);
+        setLogs(prev => [...prev.slice(-99), {
+          type: 'error',
+          message: `Runtime Error: ${data.message}`,
+          timestamp: new Date().toLocaleTimeString()
+        }]);
+      }
+    };
+
+    window.addEventListener('message', handleMessage);
+    return () => window.removeEventListener('message', handleMessage);
+  }, []);
         setNetworkRequests(prev => [...prev.slice(-49), {
           method: data.method,
           url: data.url,
@@ -321,12 +342,30 @@ const WebPreview: React.FC<WebPreviewProps> = ({ files, theme }) => {
             
             {/* Error Overlay */}
             {(runtimeError) && (
-              <div className="absolute top-4 left-4 right-4 z-50 bg-red-50 text-red-600 p-3 rounded-md border border-red-200 text-xs flex gap-2 shadow-lg">
-                <AlertCircle className="w-4 h-4 mt-0.5 shrink-0" />
-                <div className="overflow-auto max-h-32">
-                  <strong>Runtime Error:</strong> {runtimeError}
+              <div className="absolute top-4 left-4 right-4 z-50 bg-red-50 text-red-600 p-4 rounded-md border border-red-200 shadow-lg">
+                <div className="flex items-start gap-2">
+                  <AlertCircle className="w-5 h-5 mt-0.5 shrink-0" />
+                  <div className="flex-1 min-w-0">
+                    <p className="font-semibold text-sm mb-2">Runtime Error:</p>
+                    <pre className="text-xs overflow-auto max-h-32 bg-red-100 p-2 rounded font-mono whitespace-pre-wrap">{runtimeError}</pre>
+                    <div className="flex gap-2 mt-3">
+                      <button 
+                        onClick={() => navigator.clipboard.writeText(runtimeError)}
+                        className="text-xs px-3 py-1 bg-red-600 text-white rounded hover:bg-red-700 transition-colors"
+                      >
+                        Copy Error
+                      </button>
+                      <button 
+                        onClick={() => setRuntimeError(null)} 
+                        className="text-xs px-3 py-1 bg-gray-200 text-gray-700 rounded hover:bg-gray-300 transition-colors"
+                      >
+                        Dismiss
+                      </button>
+                    </div>
+                  </div>
                 </div>
-                <button onClick={() => setRuntimeError(null)} className="ml-auto text-red-400 hover:text-red-700"><XCircle className="w-4 h-4"/></button>
+              </div>
+            )}
               </div>
             )}
 
