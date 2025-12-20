@@ -18,10 +18,12 @@ import {
   MoreVertical, 
   Edit3,
   Wrench,
-  GitCompare 
+  GitCompare,
+  Search 
 } from 'lucide-react';
 import { Project, Session, KnowledgeEntry, ProjectFile } from '../types';
 import KnowledgeBase from './KnowledgeBase';
+import { ChatSearchModal } from './ChatSearchModal';
 import { handleGitHubImport } from '../services/githubService';
 import { projectService } from '../services/projectService';
 
@@ -81,6 +83,7 @@ const AppSidebar: React.FC<AppSidebarProps> = (props) => {
   const [editingSessionId, setEditingSessionId] = useState<string | null>(null);
   const [editingProjectName, setEditingProjectName] = useState('');
   const [editingSessionName, setEditingSessionName] = useState('');
+  const [showChatSearch, setShowChatSearch] = useState(false);
 
   // FIX: Safe project state updater
   const updateProjectsState = (updatedProjects: Project[]) => {
@@ -563,7 +566,16 @@ const AppSidebar: React.FC<AppSidebarProps> = (props) => {
 
                  <div className={`px-2 py-2 text-xs font-bold uppercase ${theme.textMuted} flex justify-between`}>
                      <span>Sessions</span>
-                     <button onClick={props.handleCreateSession}><Plus className="w-3 h-3 hover:text-white" /></button>
+                     <div className="flex gap-1">
+                         <button 
+                           onClick={() => setShowChatSearch(true)} 
+                           title="Search chat history"
+                           className="hover:text-white"
+                         >
+                           <Search className="w-3 h-3" />
+                         </button>
+                         <button onClick={props.handleCreateSession}><Plus className="w-3 h-3 hover:text-white" /></button>
+                     </div>
                  </div>
 
                  {projectSessions.map(session => (
@@ -681,6 +693,16 @@ const AppSidebar: React.FC<AppSidebarProps> = (props) => {
              />
          )}
       </div>
+
+      {/* Chat Search Modal */}
+      <ChatSearchModal 
+        isOpen={showChatSearch}
+        onClose={() => setShowChatSearch(false)}
+        sessions={props.sessions}
+        onNavigateToSession={(sessionId) => {
+          props.setCurrentSessionId(sessionId);
+        }}
+      />
     </div>
   );
 };
