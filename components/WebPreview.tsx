@@ -119,21 +119,6 @@ const WebPreview: React.FC<WebPreviewProps> = ({ files, theme }) => {
     window.addEventListener('message', handleMessage);
     return () => window.removeEventListener('message', handleMessage);
   }, []);
-        setNetworkRequests(prev => [...prev.slice(-49), {
-          method: data.method,
-          url: data.url,
-          status: data.status,
-          duration: data.duration,
-          timestamp: new Date().toLocaleTimeString()
-        }]);
-      } else if (data.type === 'error') {
-        setRuntimeError(data.message);
-      }
-    };
-
-    window.addEventListener('message', handleMessage);
-    return () => window.removeEventListener('message', handleMessage);
-  }, []);
 
   // 4. Generate the Mock Backend Script
   const getBackendScript = () => `
@@ -364,8 +349,6 @@ const WebPreview: React.FC<WebPreviewProps> = ({ files, theme }) => {
                     </div>
                   </div>
                 </div>
-              </div>
-            )}
               </div>
             )}
 
