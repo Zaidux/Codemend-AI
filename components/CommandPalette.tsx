@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { Search, File, FolderPlus, MessageSquare, Settings, Code2, Eye, GitBranch, Terminal, Wrench, Zap, X } from 'lucide-react';
+import { Search, File, FolderPlus, MessageSquare, Settings, Code2, Eye, GitBranch, Terminal, Wrench, Zap, X, BookOpen } from 'lucide-react';
 import { Project, Session, ProjectFile } from '../types';
 
 interface CommandPaletteProps {
@@ -20,6 +20,7 @@ interface CommandPaletteProps {
   onOpenTerminal: () => void;
   onOpenGitTracker: () => void;
   onOpenTools: () => void;
+  onOpenSnippets?: () => void;
 }
 
 type CommandItem = {
@@ -48,7 +49,8 @@ export const CommandPalette: React.FC<CommandPaletteProps> = ({
   onTogglePreview,
   onOpenTerminal,
   onOpenGitTracker,
-  onOpenTools
+  onOpenTools,
+  onOpenSnippets
 }) => {
   const [query, setQuery] = useState('');
   const [selectedIndex, setSelectedIndex] = useState(0);
@@ -69,6 +71,13 @@ export const CommandPalette: React.FC<CommandPaletteProps> = ({
       { id: 'git', label: 'Git Changes', icon: GitBranch, action: () => { onOpenGitTracker(); onClose(); }, category: 'action' },
       { id: 'tools', label: 'Tools Management', icon: Wrench, action: () => { onOpenTools(); onClose(); }, category: 'action' }
     );
+
+    // Add snippets if handler is provided
+    if (onOpenSnippets) {
+      commands.push(
+        { id: 'snippets', label: 'Code Snippets Library', icon: BookOpen, action: () => { onOpenSnippets(); onClose(); }, category: 'action' }
+      );
+    }
 
     // Files from active project
     activeProject.files.forEach(file => {

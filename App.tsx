@@ -15,6 +15,7 @@ import Terminal from './components/Terminal';
 import { ToolsManagementModal } from './components/ToolsManagementModal';
 import { GitTracker } from './components/GitTracker'; 
 import { CommandPalette } from './components/CommandPalette'; 
+import { SnippetsLibrary } from './components/SnippetsLibrary'; 
 
 import { THEMES, DEFAULT_LLM_CONFIG, DEFAULT_ROLES } from './constants';
 import { CodeLanguage, AppMode, ThemeType, Session, ChatMessage, ViewMode, ProjectFile, LLMConfig, Project, Attachment, AgentRole, KnowledgeEntry, TodoItem, FileDiff, ProjectSummary } from './types';
@@ -79,6 +80,7 @@ const App: React.FC = () => {
   const [showToolsModal, setShowToolsModal] = useState(false);
   const [showGitTracker, setShowGitTracker] = useState(false);
   const [showCommandPalette, setShowCommandPalette] = useState(false);
+  const [showSnippets, setShowSnippets] = useState(false);
   const [repoInput, setRepoInput] = useState('');
   const [leftPanelTab, setLeftPanelTab] = useState<'code' | 'preview' | 'todos'>('code');
   const [activeTab, setActiveTab] = useState<'chats' | 'files' | 'knowledge'>('chats');
@@ -672,6 +674,7 @@ const App: React.FC = () => {
                          <input type="file" ref={fileInputRef} onChange={handleFileUpload} accept=".txt,.js,.ts,.jsx,.tsx,.html,.css,.py,.java,.json" className="hidden" />
                          <button onClick={() => fileInputRef.current?.click()} className={`${theme.textMuted} hover:text-white p-1.5 rounded-full hover:bg-white/10 transition-colors`} title="Upload code file"><Code2 className="w-4 h-4" /></button>
                          <button onClick={toggleRecording} className={`${isRecording ? 'text-red-500 animate-pulse' : theme.textMuted} hover:text-white p-1.5 rounded-full hover:bg-white/10 transition-colors`} title="Record audio"><Mic className="w-4 h-4" /></button>
+                         <button onClick={() => setShowSnippets(true)} className={`${theme.textMuted} hover:text-purple-400 p-1.5 rounded-full hover:bg-purple-500/10 transition-colors`} title="Code Snippets"><BookOpen className="w-4 h-4" /></button>
                          <button onClick={() => setShowToolsModal(true)} className={`${theme.textMuted} hover:text-blue-400 p-1.5 rounded-full hover:bg-blue-500/10 transition-colors`} title="Manage AI Tools"><Wrench className="w-4 h-4" /></button>
                          <button onClick={() => setShowGitTracker(true)} className={`${theme.textMuted} hover:text-green-400 p-1.5 rounded-full hover:bg-green-500/10 transition-colors`} title="Git Changes"><GitCompare className="w-4 h-4" /></button>
                        </div>
@@ -932,6 +935,21 @@ const App: React.FC = () => {
         onClose={() => setShowToolsModal(false)}
         theme={theme}
       />
+
+      {/* Code Snippets Library */}
+      <SnippetsLibrary
+        isOpen={showSnippets}
+        onClose={() => setShowSnippets(false)}
+        onInsertSnippet={(code) => {
+          // Insert snippet into active file
+          const activeFile = activeProject.files.find(f => f.id === activeProject.activeFileId);
+          if (activeFile) {
+            updateFile(activeFile.id, {
+              content: activeFile.content + '\n\n' + code
+            });
+          }
+        }}
+      />
       
       {/* Git Tracker Modal */}
       <GitTracker
@@ -985,6 +1003,7 @@ const App: React.FC = () => {
         onOpenTerminal={() => { terminalRef.current?.openTerminal(); setShowCommandPalette(false); }}
         onOpenGitTracker={() => { setShowGitTracker(true); setShowCommandPalette(false); }}
         onOpenTools={() => { setShowToolsModal(true); setShowCommandPalette(false); }}
+        onOpenSnippets={() => { setShowSnippets(true); setShowCommandPalette(false); }}
       />
     </div>
   );
