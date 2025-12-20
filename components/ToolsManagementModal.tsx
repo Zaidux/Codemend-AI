@@ -60,7 +60,7 @@ export const ToolsManagementModal: React.FC<ToolsManagementModalProps> = ({ isOp
 
   // Tool categories
   const categories = {
-    'File Operations': ['create_file', 'update_file', 'delete_file', 'read_file', 'read_file_section', 'replace_section'],
+    'File Operations': ['create_file', 'update_file', 'delete_file', 'apply_multi_patch', 'read_file', 'read_multiple_files', 'read_file_section', 'replace_section'],
     'Search & Navigation': ['list_files', 'search_files', 'codebase_search'],
     'Code Quality': ['generate_tests', 'security_scan', 'code_review', 'performance_profile', 'refactor_code'],
     'Dependencies': ['analyze_dependencies'],

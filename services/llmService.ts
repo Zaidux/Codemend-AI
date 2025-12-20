@@ -491,6 +491,48 @@ const executeToolAction = (
         toolOutput = `Error: File "${args.fileName}" not found.\n\nHere is a list of ALL valid files in the project. Please pick one from this list:\n${fileList}`;
         logger.logToolCall('read_file', false, `File not found: ${args.fileName} (Sent file list)`);
       }
+    } else if (toolName === 'read_multiple_files') {
+      if (onStatusUpdate) onStatusUpdate(`📖 Reading ${args.files.length} files for comparison...`);
+      
+      const fileReads = args.files || [];
+      const maxFiles = 3;
+      
+      if (fileReads.length > maxFiles) {
+        toolOutput = `Error: Can only read up to ${maxFiles} files at once. You requested ${fileReads.length}.`;
+        logger.logToolCall('read_multiple_files', false, `Too many files requested: ${fileReads.length}`);
+      } else {
+        const results: string[] = [];
+        const startLines = args.startLines || [];
+        const endLines = args.endLines || [];
+        
+        fileReads.forEach((fileName: string, index: number) => {
+          const f = files.find(file => file.name === fileName);
+          if (f) {
+            const lines = f.content.split('\n');
+            const start = startLines[index] ? Math.max(0, startLines[index] - 1) : 0;
+            const end = endLines[index] ? Math.min(lines.length, endLines[index]) : lines.length;
+            const section = lines.slice(start, end);
+            
+            // Format with line numbers for easy reference
+            const numberedLines = section.map((line, i) => {
+              const lineNum = (start + i + 1).toString().padStart(4, ' ');
+              return `${lineNum} | ${line}`;
+            }).join('\n');
+            
+            const rangeInfo = startLines[index] || endLines[index] 
+              ? ` (lines ${start + 1}-${end})`
+              : ` (${lines.length} lines)`;
+            
+            results.push(`\n════════════════════════════════════════\n📄 ${f.name}${rangeInfo}\n════════════════════════════════════════\n\`\`\`${f.language}\n${numberedLines}\n\`\`\``);
+          } else {
+            results.push(`\n❌ File not found: ${fileName}`);
+          }
+        });
+        
+        const reasonText = args.reason ? `\n\n💡 Comparison Purpose: ${args.reason}\n` : '';
+        toolOutput = `${reasonText}\n🔍 Side-by-Side File Comparison (${fileReads.length} files):\n${results.join('\n\n')}`;
+        logger.logToolCall('read_multiple_files', true, `Compared ${fileReads.length} files`);
+      }
     } else if (toolName === 'read_file_section') {
       if (onStatusUpdate) onStatusUpdate(`📖 Reading ${args.fileName} lines ${args.startLine}-${args.endLine}...`);
       const f = files.find(file => file.name === args.fileName);
@@ -1243,7 +1285,7 @@ export const streamFixCodeWithGemini = async (
               const successMsg = `\n\n✅ [${tc.name}] Applied ${multiChanges.length} changes\n`;
               accumulatedGlobalStream += successMsg;
               callbacks.onContent(successMsg);
-            } else if (!change && !multiChanges && tc.name !== 'list_files' && tc.name !== 'search_files' && tc.name !== 'read_file' && tc.name !== 'save_knowledge') {
+            } else if (!change && !multiChanges && tc.name !== 'list_files' && tc.name !== 'search_files' && tc.name !== 'read_file' && tc.name !== 'read_multiple_files' && tc.name !== 'save_knowledge') {
               // Tool executed but no change (might be an error)
               const feedbackMsg = `\n\n⚠️ [${tc.name}] ${output.slice(0, 100)}...\n`;
               accumulatedGlobalStream += feedbackMsg;

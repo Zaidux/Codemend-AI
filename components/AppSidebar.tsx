@@ -19,17 +19,19 @@ import {
   Edit3,
   Wrench,
   GitCompare,
-  Search 
+  Search,
+  Clock 
 } from 'lucide-react';
 import { Project, Session, KnowledgeEntry, ProjectFile } from '../types';
 import KnowledgeBase from './KnowledgeBase';
 import { ChatSearchModal } from './ChatSearchModal';
+import { PendingChanges } from './PendingChanges';
 import { handleGitHubImport } from '../services/githubService';
 import { projectService } from '../services/projectService';
 
 interface AppSidebarProps {
-  activeTab: 'chats' | 'files' | 'knowledge';
-  setActiveTab: (tab: 'chats' | 'files' | 'knowledge') => void;
+  activeTab: 'chats' | 'files' | 'knowledge' | 'changes';
+  setActiveTab: (tab: 'chats' | 'files' | 'knowledge' | 'changes') => void;
   isSidebarOpen: boolean;
   setIsSidebarOpen: (isOpen: boolean) => void;
   theme: any;
@@ -60,6 +62,9 @@ interface AppSidebarProps {
   setProjects?: (projects: Project[]) => void;
   setShowToolsModal?: (show: boolean) => void;
   setShowGitTracker?: (show: boolean) => void;
+  onApproveChange?: (changeId: string) => void;
+  onRejectChange?: (changeId: string) => void;
+  onViewChange?: (change: any) => void;
 }
 
 interface FileNode {
@@ -429,6 +434,7 @@ const AppSidebar: React.FC<AppSidebarProps> = (props) => {
          <button onClick={() => setActiveTab('chats')} className={`flex-1 py-3 border-b-2 flex justify-center ${activeTab === 'chats' ? `${theme.accent} border-${theme.accent.replace('text-', '')}` : 'border-transparent text-gray-500 hover:text-white'}`}><MessageSquare className="w-4 h-4" /></button>
          <button onClick={() => setActiveTab('files')} className={`flex-1 py-3 border-b-2 flex justify-center ${activeTab === 'files' ? `${theme.accent} border-${theme.accent.replace('text-', '')}` : 'border-transparent text-gray-500 hover:text-white'}`}><FolderOpen className="w-4 h-4" /></button>
          <button onClick={() => setActiveTab('knowledge')} className={`flex-1 py-3 border-b-2 flex justify-center ${activeTab === 'knowledge' ? `${theme.accent} border-${theme.accent.replace('text-', '')}` : 'border-transparent text-gray-500 hover:text-white'}`}><Book className="w-4 h-4" /></button>
+         <button onClick={() => setActiveTab('changes')} className={`flex-1 py-3 border-b-2 flex justify-center ${activeTab === 'changes' ? `${theme.accent} border-${theme.accent.replace('text-', '')}` : 'border-transparent text-gray-500 hover:text-white'}`} title="Pending Changes"><Clock className="w-4 h-4" /></button>
          {props.setShowToolsModal && (
            <button onClick={() => props.setShowToolsModal!(true)} className={`flex-1 py-3 border-b-2 flex justify-center border-transparent text-gray-500 hover:text-blue-400`} title="AI Tools"><Wrench className="w-4 h-4" /></button>
          )}
@@ -690,6 +696,15 @@ const AppSidebar: React.FC<AppSidebarProps> = (props) => {
                 onAdd={(entry) => props.setKnowledgeBase([...props.knowledgeBase, entry])} 
                 onRemove={(id) => props.setKnowledgeBase(props.knowledgeBase.filter(k => k.id !== id))}
                 theme={theme}
+             />
+         )}
+
+         {activeTab === 'changes' && (
+             <PendingChanges 
+                theme={theme}
+                onApprove={(id) => props.onApproveChange?.(id)}
+                onReject={(id) => props.onRejectChange?.(id)}
+                onView={(change) => props.onViewChange?.(change)}
              />
          )}
       </div>

@@ -93,6 +93,35 @@ export const UNIVERSAL_TOOL_DEFINITIONS = {
       required: ['fileName']
     }
   },
+  read_multiple_files: {
+    name: 'read_multiple_files',
+    description: 'Read multiple files simultaneously (max 3) formatted side-by-side for easy comparison. Ideal for comparing similar functions, analyzing cross-file dependencies, or reviewing related code. Files are displayed with line numbers and aligned for visual comparison.',
+    parameters: {
+      type: Type.OBJECT,
+      properties: {
+        files: {
+          type: Type.ARRAY,
+          description: 'Array of file paths to read (max 3)',
+          items: { type: Type.STRING }
+        },
+        startLines: {
+          type: Type.ARRAY,
+          description: 'Optional: Starting line numbers for each file (1-indexed). If omitted, reads from line 1.',
+          items: { type: Type.NUMBER }
+        },
+        endLines: {
+          type: Type.ARRAY,
+          description: 'Optional: Ending line numbers for each file. If omitted, reads entire file.',
+          items: { type: Type.NUMBER }
+        },
+        reason: {
+          type: Type.STRING,
+          description: 'Brief explanation of why you are comparing these files (e.g., "Comparing authentication implementations")'
+        }
+      },
+      required: ['files']
+    }
+  },
   read_file_section: {
     name: 'read_file_section',
     description: 'Read a specific section of a file by line numbers. Useful for large files to avoid context overload.',

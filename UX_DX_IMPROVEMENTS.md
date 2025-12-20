@@ -56,34 +56,50 @@
 
 ---
 
-## 🔧 Next Priority Features (In Progress)
+## 🔧 Recently Implemented Features (December 2024)
 
-### **6. Multi-File Patch Tool** 🔀 (IN PROGRESS)
+### **6. Multi-File Patch Tool** 🔀 ✅ IMPLEMENTED (commit 5fd14e1)
 - **Purpose**: Allow AI to apply multiple file changes in one operation
 - **Features**:
-  - Batch edit multiple files simultaneously
+  - Batch edit multiple files simultaneously (max 5)
   - Atomic operations (all or nothing)
   - Progress tracking for each file
   - Rollback on failure
 - **Benefit**: Faster, more efficient AI edits across the codebase
 - **Implementation**: New `apply_multi_patch` AI tool
 
-### **7. GitHub Account Connection** 🔗 (IN PROGRESS)
+### **7. GitHub Account Connection** 🔗 ✅ IMPLEMENTED (commit 5fd14e1)
 - **Purpose**: Enable real push/pull operations with GitHub
 - **Features**:
-  - OAuth GitHub authentication
-  - Store access token securely
-  - Real-time sync status
-  - Pull latest changes from remote
-  - Push commits to remote repository
-  - Branch management
-- **Benefit**: Full Git workflow without leaving the app
-- **Integration**: Enhances existing Git Tracker
-  - `listcmds` - List all custom commands
-  - `removecmd <name>` - Delete custom commands
-  - Support for placeholders: $1, $2, $*
-  - localStorage persistence
-- **Example**: `addcmd deploy npm run build && git push`
+  - OAuth GitHub authentication modal
+  - Store access token securely in localStorage
+  - Connect/disconnect GitHub account
+  - Shows connected user info
+- **Benefit**: Foundation for full Git workflow
+- **Integration**: Enhances existing Git Tracker (push/pull ready)
+
+### **8. Multi-File Read Tool** 📖 ✅ IMPLEMENTED
+- **Purpose**: Compare multiple files side-by-side for AI analysis
+- **Features**:
+  - Read up to 3 files simultaneously
+  - Optional line range specification per file
+  - Formatted with line numbers for easy reference
+  - Side-by-side comparison view
+  - Reason field to explain comparison purpose
+- **Benefit**: AI can compare similar functions, analyze cross-file dependencies
+- **Implementation**: New `read_multiple_files` AI tool
+
+### **9. Pending Changes Persistence** 💾 ✅ IMPLEMENTED
+- **Purpose**: Persist AI-suggested changes across browser refreshes
+- **Features**:
+  - Pending Changes tab in sidebar (Clock icon)
+  - Filter by: All, Pending, Approved, Rejected
+  - Approve/reject/view each change
+  - Timestamps for all changes
+  - localStorage persistence survives refreshes
+  - Shows line count deltas (+/-)
+- **Benefit**: Never lose AI changes, review at your own pace
+- **Location**: Sidebar 4th tab (Clock icon)
 
 ---
 
@@ -98,6 +114,7 @@
   - Quick file search with fuzzy matching
   - Quick actions (create file, switch mode, etc.)
   - Session and project navigation
+  - Code Snippets Library access
   - Categorized results
 - **Benefit**: Keyboard-first workflow, 10x faster navigation
 
