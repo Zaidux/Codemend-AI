@@ -397,6 +397,16 @@ const buildSystemPrompt = (
   const toolInstructions = hasTools ? `
 CRITICAL TOOL USAGE RULES:
 1. CREATE FILES: create_file(name, content, language) - Provide COMPLETE content
+   ⚠️  PROACTIVELY CREATE NEW FILES when needed:
+   - Component files (e.g., Button.tsx, Header.tsx)
+   - Utility/helper files (e.g., utils.ts, helpers.ts, constants.ts)
+   - Configuration files (e.g., config.ts, .env.example)
+   - Type definition files (e.g., types.ts, interfaces.ts)
+   - Test files (e.g., component.test.ts)
+   - Style files (e.g., styles.css, theme.ts)
+   - Documentation files (e.g., README.md, API.md)
+   💡 Don't ask - just create! If the project needs a new file, create it immediately.
+
 2. UPDATE FILES: update_file(name, content) - MUST provide FULL file content${!canModifyCode ? ' (DISABLED in EXPLAIN mode)' : ''}
 3. DELETE FILES: delete_file(name)${!canModifyCode ? ' (DISABLED in EXPLAIN mode)' : ''}
 4. READ FILE: read_file(fileName) - Inspect specific file contents
@@ -406,11 +416,20 @@ CRITICAL TOOL USAGE RULES:
 8. SAVE KNOWLEDGE: save_knowledge(tags, content) - Use tags like #react, #auth, #user-pref
 9. MANAGE TASKS: manage_tasks(action, task?, status?) - Actions: add, update, complete, delete
 
+FILE ORGANIZATION BEST PRACTICES:
+- Separate concerns: one component/utility per file
+- Use descriptive file names (e.g., UserAuthService.ts not auth.ts)
+- Group related files in logical structures
+- Create index files for easier imports
+- Add types/interfaces files when needed
+- Don't stuff everything in one file!
+
 EXECUTION PROTOCOL:
 - DO NOT ASK permission - JUST USE TOOLS
 - DO NOT EXPLAIN what you will do - DO IT
 - If tool fails, fix parameters and retry
 - Chain multiple tools for complex tasks
+- CREATE NEW FILES whenever project structure demands it
 ` : '';
 
   return `

@@ -21,6 +21,7 @@ import { MultiDiffViewer } from './components/MultiDiffViewer';
 import { PlannerRoom } from './components/PlannerRoom';
 import { TaskApprovalModal } from './components/TaskApprovalModal';
 import { ErrorAnalysisPanel } from './components/ErrorAnalysisPanel';
+import { CheckpointRecovery } from './components/CheckpointRecovery';
 
 import { THEMES, DEFAULT_LLM_CONFIG, DEFAULT_ROLES } from './constants';
 import { GitHubService, parseGitHubUrl, GitHubFile } from './services/githubApiService';
@@ -32,6 +33,7 @@ import { modelSwitchService } from './services/modelSwitchService';
 import { KnowledgeManager } from './services/llmTools';
 import { GitService } from './services/gitService';
 import { errorDetectionService } from './services/errorDetectionService';
+import { CheckpointService } from './services/checkpointService';
 
 // --- FACTORY FUNCTIONS ---
 const createNewFile = (name: string = 'script.js'): ProjectFile => ({
@@ -169,6 +171,11 @@ const App: React.FC = () => {
   const [error, setError] = useState<string | null>(null);
   const [streamingMessageId, setStreamingMessageId] = useState<string | null>(null);
   const [streamingContent, setStreamingContent] = useState<string>('');
+
+  // Checkpoint state
+  const [showCheckpointRecovery, setShowCheckpointRecovery] = useState(false);
+  const [checkpointError, setCheckpointError] = useState<string | null>(null);
+  const [checkpointService] = useState(() => CheckpointService.getInstance());
 
   const chatContainerRef = useRef<HTMLDivElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -437,6 +444,41 @@ const App: React.FC = () => {
     setIsProcessComplete(true);
   };
 
+  // Checkpoint recovery handlers
+  const handleContinueFromCheckpoint = () => {
+    const checkpoint = checkpointService.getCurrentCheckpoint();
+    if (!checkpoint) return;
+
+    const resumePrompt = checkpointService.generateResumePrompt();
+    const resumeMessage: ChatMessage = {
+      id: crypto.randomUUID(),
+      role: 'user',
+      content: resumePrompt,
+      timestamp: Date.now()
+    };
+
+    const newMessages = [...checkpoint.messages, resumeMessage];
+    updateSession({ messages: newMessages });
+    triggerAIResponse(newMessages, checkpoint.aiContext.currentGoal);
+  };
+
+  const handleIterateFromCheckpoint = (additionalContext: string) => {
+    const checkpoint = checkpointService.getCurrentCheckpoint();
+    if (!checkpoint) return;
+
+    const resumePrompt = checkpointService.generateResumePrompt(additionalContext);
+    const resumeMessage: ChatMessage = {
+      id: crypto.randomUUID(),
+      role: 'user',
+      content: resumePrompt,
+      timestamp: Date.now()
+    };
+
+    const newMessages = [...checkpoint.messages, resumeMessage];
+    updateSession({ messages: newMessages });
+    triggerAIResponse(newMessages, checkpoint.aiContext.currentGoal);
+  };
+
   // Generate AI-powered session title
   const generateSessionTitle = async (firstMessage: string) => {
     try {
@@ -508,11 +550,26 @@ const App: React.FC = () => {
   };
 
   // New function to handle both new messages and retries
-  const triggerAIResponse = async (history: ChatMessage[]) => {
+  const triggerAIResponse = async (history: ChatMessage[], resumeContext?: string) => {
     setIsLoading(true);
     setError(null);
     setProcessSteps([]);
     setIsProcessComplete(false);
+    setShowCheckpointRecovery(false);
+
+    // Create checkpoint before starting
+    const userMessage = history[history.length - 1];
+    const checkpointId = checkpointService.createCheckpoint(
+      history,
+      {
+        currentGoal: resumeContext || userMessage.content.substring(0, 100),
+        completedSteps: [],
+        remainingSteps: [],
+        filesAnalyzed: [],
+        decisionsLog: []
+      },
+      userMessage.content
+    );
 
     // Create a temporary streaming message
     const streamingMsgId = crypto.randomUUID();
@@ -560,6 +617,7 @@ const App: React.FC = () => {
   const handleStreamingResponse = async (history: ChatMessage[], streamingMsgId: string) => {
     abortControllerRef.current = new AbortController();
     setProcessSteps(['Analyzing request...']);
+    let lastSuccessfulAction: string | undefined;
 
     try {
       await streamFixCodeWithGemini({
@@ -576,8 +634,30 @@ const App: React.FC = () => {
                 if (prev[prev.length - 1] === status) return prev;
                 return [...prev, status];
             });
+            lastSuccessfulAction = status;
+            // Update checkpoint with progress
+            checkpointService.updateCheckpoint({
+              aiContext: {
+                ...checkpointService.getCurrentCheckpoint()?.aiContext!,
+                completedSteps: [...(checkpointService.getCurrentCheckpoint()?.aiContext.completedSteps || []), status]
+              }
+            });
         },
-        onToolCalls: (toolCalls) => processToolCalls(toolCalls),
+        onToolCalls: (toolCalls) => {
+          processToolCalls(toolCalls);
+          // Track tool execution in checkpoint
+          toolCalls.forEach(call => {
+            if (call.name === 'update_file' || call.name === 'create_file') {
+              checkpointService.addFileInProgress(call.args.fileName || call.args.name);
+              checkpointService.recordPartialChange(
+                call.args.fileName || call.args.name,
+                call.name === 'create_file' ? 'create' : 'update',
+                call.args.content,
+                false
+              );
+            }
+          });
+        },
         onProposedChanges: (changes) => {
           if (changes.length > 1) {
             // Multiple changes - use MultiDiffViewer
@@ -595,6 +675,9 @@ const App: React.FC = () => {
           };
           updateSession({ messages: [...history, aiMsg] });
           
+          // Clear checkpoint on success
+          checkpointService.clearCurrentCheckpoint();
+          
           // Detect errors in AI response (Phase 7)
           const detectedError = errorDetectionService.detectFromMessage(
             aiMsg,
@@ -604,10 +687,22 @@ const App: React.FC = () => {
             console.warn('Error detected in AI response:', detectedError);
           }
         },
-        onError: (error) => setError(error)
+        onError: (error) => {
+          setError(error);
+          // Record error in checkpoint
+          checkpointService.recordError(error, lastSuccessfulAction);
+          setCheckpointError(error);
+          setShowCheckpointRecovery(true);
+        }
       }, abortControllerRef.current.signal);
     } catch (error: any) {
-      if (error.name !== 'AbortError') setError(error.message);
+      if (error.name !== 'AbortError') {
+        setError(error.message);
+        // Record error in checkpoint
+        checkpointService.recordError(error.message, lastSuccessfulAction);
+        setCheckpointError(error.message);
+        setShowCheckpointRecovery(true);
+      }
     } finally {
       setIsLoading(false);
       setStreamingMessageId(null);
@@ -1683,6 +1778,22 @@ You can review the implementation in the coding session.
                             </div>
                         )}
                     </div>
+                )}
+
+                {/* --- CHECKPOINT RECOVERY --- */}
+                {showCheckpointRecovery && (
+                  <CheckpointRecovery
+                    theme={theme}
+                    onContinue={handleContinueFromCheckpoint}
+                    onIterate={handleIterateFromCheckpoint}
+                    errorMessage={checkpointError || undefined}
+                    show={showCheckpointRecovery}
+                    checkpointSummary={{
+                      completedSteps: checkpointService.getCurrentCheckpoint()?.aiContext.completedSteps.length || 0,
+                      remainingSteps: checkpointService.getCurrentCheckpoint()?.aiContext.remainingSteps.length || 0,
+                      filesInProgress: checkpointService.getCurrentCheckpoint()?.filesInProgress || []
+                    }}
+                  />
                 )}
 
                 {error && (
