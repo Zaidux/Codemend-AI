@@ -311,6 +311,39 @@ export const GitTracker: React.FC<GitTrackerProps> = ({
 
         {/* Modified Files */}
         <div className="flex-1 overflow-y-auto p-6 space-y-4 custom-scrollbar">
+          {/* Pull Section - Always visible when GitHub URL exists */}
+          {currentProject.githubUrl && (
+            <div className="mb-4">
+              <h3 className={`text-sm font-semibold ${theme.textMuted} mb-3 uppercase tracking-wider flex items-center gap-2`}>
+                <Download className="w-4 h-4" />
+                Pull from Remote
+              </h3>
+              {!isAuthenticated ? (
+                <div className="p-4 bg-yellow-500/10 border border-yellow-500/30 rounded-lg">
+                  <p className={`text-sm ${theme.textMain} mb-2`}>GitHub Authentication Required</p>
+                  <p className={`text-xs ${theme.textMuted} mb-3`}>
+                    Connect your GitHub account to pull changes from the remote repository.
+                  </p>
+                  <button
+                    onClick={() => alert('Click the GitHub icon in the top-right header to connect your account')}
+                    className="px-3 py-1.5 rounded bg-yellow-500/20 text-yellow-400 hover:bg-yellow-500/30 transition-colors text-xs"
+                  >
+                    How to Connect
+                  </button>
+                </div>
+              ) : (
+                <button
+                  onClick={handlePull}
+                  disabled={pulling}
+                  className="w-full px-4 py-3 rounded-lg bg-blue-500 text-white hover:bg-blue-600 transition-colors disabled:opacity-50 flex items-center justify-center gap-2 font-medium"
+                >
+                  <Download className="w-5 h-5" />
+                  {pulling ? 'Pulling Changes...' : 'Pull Latest Changes from GitHub'}
+                </button>
+              )}
+            </div>
+          )}
+
           <div>
             <h3 className={`text-sm font-semibold ${theme.textMuted} mb-3 uppercase tracking-wider flex items-center gap-2`}>
               <RefreshCw className="w-4 h-4" />
@@ -415,15 +448,41 @@ export const GitTracker: React.FC<GitTrackerProps> = ({
 
         {/* Footer */}
         <div className={`p-4 border-t ${theme.border} flex items-center justify-between`}>
-          <p className={`text-xs ${theme.textMuted}`}>
-            💡 Tip: Select files to stage and commit them
-          </p>
-          <button
-            onClick={onClose}
-            className={`px-4 py-2 rounded-lg text-sm ${theme.bgPanel} ${theme.textMuted} hover:text-white border ${theme.border} hover:bg-white/5 transition-colors`}
-          >
-            Close
-          </button>
+          <div className="flex items-center gap-2">
+            <p className={`text-xs ${theme.textMuted}`}>
+              💡 Tip: Select files to stage and commit them
+            </p>
+          </div>
+          <div className="flex items-center gap-2">
+            {currentProject.githubUrl && (
+              <>
+                {!isAuthenticated ? (
+                  <button
+                    onClick={() => alert('Please connect your GitHub account first by clicking the GitHub icon in the header')}
+                    className="px-4 py-2 rounded-lg text-sm bg-yellow-500/20 text-yellow-400 border border-yellow-500/30 hover:bg-yellow-500/30 transition-colors flex items-center gap-2"
+                  >
+                    <Download className="w-4 h-4" />
+                    Pull Changes (Auth Required)
+                  </button>
+                ) : (
+                  <button
+                    onClick={handlePull}
+                    disabled={pulling}
+                    className="px-4 py-2 rounded-lg text-sm bg-blue-500 text-white hover:bg-blue-600 transition-colors disabled:opacity-50 flex items-center gap-2"
+                  >
+                    <Download className="w-4 h-4" />
+                    {pulling ? 'Pulling...' : 'Pull from Remote'}
+                  </button>
+                )}
+              </>
+            )}
+            <button
+              onClick={onClose}
+              className={`px-4 py-2 rounded-lg text-sm ${theme.bgPanel} ${theme.textMuted} hover:text-white border ${theme.border} hover:bg-white/5 transition-colors`}
+            >
+              Close
+            </button>
+          </div>
         </div>
       </div>
 
