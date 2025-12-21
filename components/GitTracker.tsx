@@ -43,6 +43,13 @@ export const GitTracker: React.FC<GitTrackerProps> = ({
     setIsAuthenticated(gitHubService.isAuthenticated());
   }, [gitHubService]);
 
+  // Re-check authentication when modal opens
+  useEffect(() => {
+    if (isOpen) {
+      setIsAuthenticated(gitHubService.isAuthenticated());
+    }
+  }, [isOpen, gitHubService]);
+
   const loadGitStatus = async () => {
     setLoadingStatus(true);
     try {
