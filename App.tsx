@@ -20,6 +20,7 @@ import { GitHubAuthModal } from './components/GitHubAuthModal';
 import { MultiDiffViewer } from './components/MultiDiffViewer';
 import { PlannerRoom } from './components/PlannerRoom';
 import { TaskApprovalModal } from './components/TaskApprovalModal';
+import { ErrorAnalysisPanel } from './components/ErrorAnalysisPanel';
 
 import { THEMES, DEFAULT_LLM_CONFIG, DEFAULT_ROLES } from './constants';
 import { GitHubService, parseGitHubUrl, GitHubFile } from './services/githubApiService';
@@ -30,6 +31,7 @@ import { contextService } from './services/contextService';
 import { modelSwitchService } from './services/modelSwitchService';
 import { KnowledgeManager } from './services/llmTools';
 import { GitService } from './services/gitService';
+import { errorDetectionService } from './services/errorDetectionService';
 
 // --- FACTORY FUNCTIONS ---
 const createNewFile = (name: string = 'script.js'): ProjectFile => ({
@@ -90,6 +92,7 @@ const App: React.FC = () => {
   const [showMultiDiff, setShowMultiDiff] = useState(false);
   const [multiDiffChanges, setMultiDiffChanges] = useState<FileDiff[]>([]);
   const [showPlannerRoom, setShowPlannerRoom] = useState(false);
+  const [showErrorAnalysis, setShowErrorAnalysis] = useState(false);
   const [repoInput, setRepoInput] = useState('');
   const [leftPanelTab, setLeftPanelTab] = useState<'code' | 'preview' | 'todos'>('code');
   const [activeTab, setActiveTab] = useState<'chats' | 'files' | 'knowledge'>('chats');
@@ -591,6 +594,15 @@ const App: React.FC = () => {
             id: streamingMsgId, role: 'model', content: fullResponse, timestamp: Date.now()
           };
           updateSession({ messages: [...history, aiMsg] });
+          
+          // Detect errors in AI response (Phase 7)
+          const detectedError = errorDetectionService.detectFromMessage(
+            aiMsg,
+            activeSession.id
+          );
+          if (detectedError) {
+            console.warn('Error detected in AI response:', detectedError);
+          }
         },
         onError: (error) => setError(error)
       }, abortControllerRef.current.signal);
@@ -744,6 +756,15 @@ const App: React.FC = () => {
     }
     const aiMsg: ChatMessage = { id: crypto.randomUUID(), role: 'model', content: response.response, timestamp: Date.now() };
     updateSession({ messages: [...history, aiMsg] });
+
+    // Detect errors in AI response (Phase 7)
+    const detectedError = errorDetectionService.detectFromMessage(
+      aiMsg,
+      activeSession.id
+    );
+    if (detectedError) {
+      console.warn('Error detected in AI response:', detectedError);
+    }
 
     // Auto-verification for delegated tasks (Phase 5)
     checkDelegatedTaskCompletion(aiMsg);
@@ -1548,6 +1569,7 @@ You can review the implementation in the coding session.
                          <button onClick={() => setShowSnippets(true)} className={`${theme.textMuted} hover:text-purple-400 p-1.5 rounded-full hover:bg-purple-500/10 transition-colors`} title="Code Snippets"><BookOpen className="w-4 h-4" /></button>
                          <button onClick={() => setShowToolsModal(true)} className={`${theme.textMuted} hover:text-blue-400 p-1.5 rounded-full hover:bg-blue-500/10 transition-colors`} title="Manage AI Tools"><Wrench className="w-4 h-4" /></button>
                          <button onClick={() => setShowGitTracker(true)} className={`${theme.textMuted} hover:text-green-400 p-1.5 rounded-full hover:bg-green-500/10 transition-colors`} title="Git Changes"><GitCompare className="w-4 h-4" /></button>
+                         <button onClick={() => setShowErrorAnalysis(true)} className={`${theme.textMuted} hover:text-orange-400 p-1.5 rounded-full hover:bg-orange-500/10 transition-colors`} title="Error Analysis"><AlertTriangle className="w-4 h-4" /></button>
                        </div>
                        <button onClick={handleSendMessage} disabled={isLoading} className={`absolute right-2 bottom-2 p-2.5 rounded-lg transition-all ${isLoading ? 'bg-white/5 text-slate-500 cursor-not-allowed' : `${theme.button} ${theme.buttonHover} text-white shadow-lg`}`}>
                          {isLoading ? <div className="animate-spin w-5 h-5 border-2 border-white/30 border-t-white rounded-full"/> : <Play className="w-5 h-5 fill-current"/>}
@@ -1941,6 +1963,7 @@ You can review the implementation in the coding session.
         onOpenGitTracker={() => { setShowGitTracker(true); setShowCommandPalette(false); }}
         onOpenTools={() => { setShowToolsModal(true); setShowCommandPalette(false); }}
         onOpenSnippets={() => { setShowSnippets(true); setShowCommandPalette(false); }}
+        onOpenErrorAnalysis={() => { setShowErrorAnalysis(true); setShowCommandPalette(false); }}
       />
 
       {/* GitHub Authentication Modal */}
@@ -1966,6 +1989,24 @@ You can review the implementation in the coding session.
         isLoading={isLoading}
         onSendMessage={handlePlannerMessage}
       />
+
+      {/* Error Analysis Panel */}
+      {showErrorAnalysis && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50" onClick={() => setShowErrorAnalysis(false)}>
+          <div className={`w-full max-w-4xl h-[80vh] ${theme.bgApp} rounded-xl shadow-2xl overflow-hidden`} onClick={e => e.stopPropagation()}>
+            <div className={`flex items-center justify-between p-4 border-b ${theme.border}`}>
+              <h2 className="text-lg font-semibold">Error Analysis</h2>
+              <button onClick={() => setShowErrorAnalysis(false)} className={`p-1 rounded hover:${theme.hover}`}>
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+            <ErrorAnalysisPanel
+              sessionId={activeSession.id}
+              theme={theme}
+            />
+          </div>
+        </div>
+      )}
 
       {/* Task Approval Modal */}
       {pendingApprovalTask && (

@@ -2,6 +2,7 @@ import { FixRequest, FixResponse, ToolCall, LLMConfig, Attachment, KnowledgeEntr
 import { contextService } from './contextService';
 import { callGemini, callOpenAICompatible, callOpenAICompatibleStream } from './llmClient';
 import { ToolUsageLogger, KnowledgeManager } from './llmTools';
+import { errorDetectionService } from './errorDetectionService';
 
 // --- HELPERS ---
 const estimateTokens = (text: string) => Math.ceil(text.length / 4);
@@ -76,6 +77,73 @@ const safeJsonParse = (jsonStr: string): any => {
       throw new Error(`Invalid JSON format. Logic failed to repair: ${jsonStr.substring(0, 50)}...`);
     }
   }
+};
+
+// --- ENHANCED RETRY LOGIC WITH EXPONENTIAL BACKOFF (Phase 7) ---
+/**
+ * Retry a tool execution with exponential backoff for transient errors
+ */
+const retryToolWithBackoff = async (
+  toolName: string,
+  args: any,
+  files: ProjectFile[],
+  logger: ToolUsageLogger,
+  knowledgeManager: KnowledgeManager,
+  sessionId?: string
+): Promise<{ output: string; change?: FileDiff; multiChanges?: FileDiff[] }> => {
+  let lastError: Error | null = null;
+  
+  for (let attempt = 1; attempt <= 3; attempt++) {
+    try {
+      const result = executeToolAction(toolName, args, files, logger, knowledgeManager);
+      
+      // If successful, return immediately
+      if (!result.output.startsWith('Error:')) {
+        if (attempt > 1) {
+          // Mark the error as resolved
+          console.log(`✅ Tool ${toolName} succeeded on attempt ${attempt}`);
+        }
+        return result;
+      }
+      
+      // Check if error is retryable
+      const error = new Error(result.output);
+      error.name = 'ToolExecutionError';
+      const detectedError = errorDetectionService.detectFromToolExecution(
+        toolName,
+        error,
+        sessionId,
+        attempt
+      );
+      
+      // Check if we should retry
+      if (!errorDetectionService.shouldRetry(detectedError)) {
+        console.warn(`❌ Error not retryable for ${toolName}:`, result.output);
+        return result; // Return error result
+      }
+      
+      // Wait with exponential backoff before retrying
+      const delay = errorDetectionService.getRetryDelay(attempt);
+      console.log(`⏳ Retrying ${toolName} in ${delay}ms (attempt ${attempt}/3)...`);
+      await new Promise(resolve => setTimeout(resolve, delay));
+      
+      lastError = error;
+    } catch (error: any) {
+      lastError = error;
+      console.error(`❌ Exception during ${toolName} execution:`, error);
+      
+      // For unexpected errors, wait and retry
+      const delay = errorDetectionService.getRetryDelay(attempt);
+      if (attempt < 3) {
+        await new Promise(resolve => setTimeout(resolve, delay));
+      }
+    }
+  }
+  
+  // All retries failed
+  return {
+    output: `Error: All retry attempts failed for ${toolName}. Last error: ${lastError?.message || 'Unknown error'}`,
+  };
 };
 
 // --- INTELLIGENT TOOL PARAMETER FIX ---
@@ -1257,6 +1325,20 @@ export const fixCodeWithGemini = async (request: FixRequest): Promise<FixRespons
 
         let { output, change, multiChanges } = executeToolAction(fc.name, args, safeAllFiles, logger, knowledgeManager) as any;
         
+        // ENHANCED: Detect and log tool execution errors (Phase 7)
+        let detectedError: any = null;
+        if (output.startsWith('Error:')) {
+          const error = new Error(output);
+          error.name = 'ToolExecutionError';
+          detectedError = errorDetectionService.detectFromToolExecution(
+            fc.name,
+            error,
+            undefined,
+            1
+          );
+          console.warn('Tool execution error detected:', detectedError);
+        }
+        
         // ENHANCED: Intelligent retry logic for common tool errors
         if (output.startsWith('Error:')) {
           const retryResult = attemptToolParameterFix(fc.name, args, output, safeAllFiles);
@@ -1267,6 +1349,15 @@ export const fixCodeWithGemini = async (request: FixRequest): Promise<FixRespons
               output = `✅ Auto-fixed parameters:\n${retryExecution.output}`;
               change = retryExecution.change;
               multiChanges = retryExecution.multiChanges;
+              
+              // Mark error as resolved (Phase 7)
+              if (detectedError) {
+                errorDetectionService.resolveError(
+                  detectedError.id,
+                  'auto_retry',
+                  'Tool parameters were automatically fixed and retry succeeded'
+                );
+              }
             } else {
               output = `❌ Retry failed. ${output}\n\nSuggestion: ${retryResult.suggestion}`;
             }

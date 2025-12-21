@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { Search, File, FolderPlus, MessageSquare, Settings, Code2, Eye, GitBranch, Terminal, Wrench, Zap, X, BookOpen } from 'lucide-react';
+import { Search, File, FolderPlus, MessageSquare, Settings, Code2, Eye, GitBranch, Terminal, Wrench, Zap, X, BookOpen, AlertTriangle } from 'lucide-react';
 import { Project, Session, ProjectFile } from '../types';
 
 interface CommandPaletteProps {
@@ -21,6 +21,7 @@ interface CommandPaletteProps {
   onOpenGitTracker: () => void;
   onOpenTools: () => void;
   onOpenSnippets?: () => void;
+  onOpenErrorAnalysis?: () => void;
 }
 
 type CommandItem = {
@@ -50,7 +51,8 @@ export const CommandPalette: React.FC<CommandPaletteProps> = ({
   onOpenTerminal,
   onOpenGitTracker,
   onOpenTools,
-  onOpenSnippets
+  onOpenSnippets,
+  onOpenErrorAnalysis
 }) => {
   const [query, setQuery] = useState('');
   const [selectedIndex, setSelectedIndex] = useState(0);
@@ -76,6 +78,13 @@ export const CommandPalette: React.FC<CommandPaletteProps> = ({
     if (onOpenSnippets) {
       commands.push(
         { id: 'snippets', label: 'Code Snippets Library', icon: BookOpen, action: () => { onOpenSnippets(); onClose(); }, category: 'action' }
+      );
+    }
+
+    // Add error analysis if handler is provided
+    if (onOpenErrorAnalysis) {
+      commands.push(
+        { id: 'errors', label: 'Error Analysis', icon: AlertTriangle, action: () => { onOpenErrorAnalysis(); onClose(); }, category: 'action' }
       );
     }
 

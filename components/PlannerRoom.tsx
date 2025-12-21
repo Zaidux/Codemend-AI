@@ -1,7 +1,8 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { X, Send, Brain, CheckCircle, Clock, AlertCircle, FileText, Sparkles, Loader2 } from 'lucide-react';
+import { X, Send, Brain, CheckCircle, Clock, AlertCircle, FileText, Sparkles, Loader2, AlertTriangle } from 'lucide-react';
 import { Session, ChatMessage, DelegatedTask, ThemeConfig, LLMConfig, ProjectFile, AgentRole, KnowledgeEntry, Attachment } from '../types';
 import MarkdownRenderer from './MarkdownRenderer';
+import { errorDetectionService } from '../services/errorDetectionService';
 
 interface PlannerRoomProps {
   isOpen: boolean;
@@ -185,6 +186,25 @@ export const PlannerRoom: React.FC<PlannerRoomProps> = ({
 
             {/* Input Area */}
             <div className={`border-t ${theme.border} p-4 ${theme.bgPanelHeader}`}>
+              {/* Error Report Button */}
+              <div className="mb-2">
+                <button
+                  onClick={() => {
+                    const errorReport = errorDetectionService.createPlannerReport(plannerSession.id);
+                    onSendMessage(`📊 Error Report:\n\n${errorReport}`);
+                  }}
+                  disabled={isLoading}
+                  className={`w-full px-3 py-2 rounded-lg text-xs font-medium border transition-all flex items-center justify-center gap-2 ${
+                    isLoading
+                      ? 'bg-gray-500/20 text-gray-500 cursor-not-allowed border-gray-500/20'
+                      : `${theme.bgApp} ${theme.textMuted} border-${theme.border} hover:bg-orange-500/10 hover:text-orange-400 hover:border-orange-500/30`
+                  }`}
+                >
+                  <AlertTriangle className="w-3.5 h-3.5" />
+                  Send Error Report to Planner
+                </button>
+              </div>
+              
               <div className="flex gap-2">
                 <textarea
                   value={input}
