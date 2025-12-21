@@ -3,6 +3,7 @@ import { X, GitBranch, GitCommit, Upload, Download, CheckCircle, AlertCircle, Re
 import { Project, ProjectFile, CodeLanguage, FileChange } from '../types';
 import { GitHubService, parseGitHubUrl } from '../services/githubApiService';
 import { GitService } from '../services/gitService';
+import { PullPreviewModal } from './PullPreviewModal';
 
 interface GitTrackerProps {
   isOpen: boolean;
@@ -36,6 +37,7 @@ export const GitTracker: React.FC<GitTrackerProps> = ({
   const [isAuthenticated, setIsAuthenticated] = useState(false);
   const [commitCount, setCommitCount] = useState(0);
   const [localCommitCount, setLocalCommitCount] = useState(0);
+  const [showPullPreview, setShowPullPreview] = useState(false);
 
   useEffect(() => {
     setIsAuthenticated(gitHubService.isAuthenticated());
@@ -161,28 +163,25 @@ export const GitTracker: React.FC<GitTrackerProps> = ({
       return;
     }
 
+    // Open the pull preview modal instead of pulling directly
+    setShowPullPreview(true);
+  };
+
+  const handleConfirmPull = async (filesToPull: ProjectFile[]) => {
     setPulling(true);
     try {
-      const remoteFiles = await gitHubService.pullChanges(parsed.owner, parsed.repo);
+      await onPull(filesToPull);
       
-      // Convert to ProjectFile format
-      const projectFiles: ProjectFile[] = remoteFiles.map((rf: any) => ({
-        id: rf.path,
-        name: rf.path,
-        content: rf.content,
-        language: getLanguageFromPath(rf.path)
-      }));
-
-      await onPull(projectFiles);
-      
-      alert(`Successfully pulled ${projectFiles.length} file(s) from GitHub!`);
+      alert(`Successfully pulled ${filesToPull.length} file(s) from GitHub!`);
       setRemoteChanges(false);
+      setShowPullPreview(false);
       
       // Reload git status after pulling
       await loadGitStatus();
     } catch (error: any) {
       console.error('Pull failed:', error);
       alert(`Failed to pull: ${error.message}`);
+      throw error; // Re-throw so the modal can handle it
     } finally {
       setPulling(false);
     }
@@ -248,6 +247,17 @@ export const GitTracker: React.FC<GitTrackerProps> = ({
             </div>
           </div>
           <div className="flex items-center gap-2">
+            {currentProject.githubUrl && isAuthenticated && (
+              <button 
+                onClick={handlePull}
+                disabled={pulling}
+                className={`px-3 py-2 rounded-lg flex items-center gap-2 text-sm bg-blue-500/20 text-blue-400 border border-blue-500/30 hover:bg-blue-500/30 transition-colors disabled:opacity-50`}
+                title="Pull changes from remote repository"
+              >
+                <Download className="w-4 h-4" />
+                Pull
+              </button>
+            )}
             <button 
               onClick={loadGitStatus}
               disabled={loadingStatus}
@@ -416,6 +426,16 @@ export const GitTracker: React.FC<GitTrackerProps> = ({
           </button>
         </div>
       </div>
+
+      {/* Pull Preview Modal */}
+      <PullPreviewModal
+        isOpen={showPullPreview}
+        onClose={() => setShowPullPreview(false)}
+        theme={theme}
+        githubUrl={currentProject.githubUrl || ''}
+        onConfirmPull={handleConfirmPull}
+        currentFiles={currentProject.files}
+      />
     </div>
   );
 };

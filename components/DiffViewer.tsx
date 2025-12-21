@@ -23,8 +23,12 @@ const DiffViewer: React.FC<DiffViewerProps> = ({
   const [isCollapsed, setIsCollapsed] = React.useState(false);
   const containerRef = React.useRef<HTMLDivElement>(null);
 
-  const originalLines = original.split('\n');
-  const modifiedLines = modified.split('\n');
+  // FIXED: Add safety checks for undefined/null values
+  const safeOriginal = original ?? '';
+  const safeModified = modified ?? '';
+
+  const originalLines = safeOriginal.split('\n');
+  const modifiedLines = safeModified.split('\n');
 
   // Enhanced diff algorithm with change detection
   const computeDiff = () => {
