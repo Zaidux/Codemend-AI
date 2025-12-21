@@ -124,7 +124,10 @@ export class GitService {
     if (!state) throw new Error("Git not initialized");
 
     const status = await this.getStatus(projectId, currentFiles);
-    if (status.changes.length === 0) throw new Error("Nothing to commit (working tree clean)");
+    if (status.changes.length === 0) {
+      // Allow empty commits for baseline establishment
+      console.warn("Working tree clean - creating baseline commit");
+    }
 
     const newCommit: GitCommit = {
       id: this.generateHash(),
@@ -142,16 +145,37 @@ export class GitService {
 
     // Update HEAD Snapshot (This is the "checkout" state)
     // We update the internal map to reflect the new state of files
-    status.changes.forEach(change => {
-      if (change.type === 'deleted') {
-        delete state.headSnapshot[change.file.name];
-      } else {
-        state.headSnapshot[change.file.name] = change.currentContent!;
-      }
-    });
+    if (status.changes.length > 0) {
+      status.changes.forEach(change => {
+        if (change.type === 'deleted') {
+          delete state.headSnapshot[change.file.name];
+        } else {
+          state.headSnapshot[change.file.name] = change.currentContent!;
+        }
+      });
+    } else {
+      // For baseline commits, set all current files as HEAD
+      currentFiles.forEach(file => {
+        state.headSnapshot[file.name] = file.content;
+      });
+    }
 
     this.saveGitState(projectId, state);
     return newCommit;
+  }
+
+  // Get all commits for a project
+  async getCommits(projectId: string): Promise<GitCommit[]> {
+    const state = this.getGitState(projectId);
+    if (!state) return [];
+    return state.commits;
+  }
+
+  // Check if project has any commits
+  async hasCommits(projectId: string): Promise<boolean> {
+    const state = this.getGitState(projectId);
+    if (!state) return false;
+    return state.commits.length > 1; // More than just initial commit
   }
 
   // Checkout (Switch Branch)

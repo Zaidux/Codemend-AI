@@ -34,14 +34,44 @@ const safeJsonParse = (jsonStr: string): any => {
   try {
     return JSON.parse(cleanStr);
   } catch (e) {
-    // 3. Advanced Sanitation for Common LLM Errors
+    // 3. Advanced Sanitation for Common LLM and Streaming Errors
     try {
       // Fix trailing commas in objects/arrays
       cleanStr = cleanStr.replace(/,\s*}/g, '}').replace(/,\s*]/g, ']');
+      
+      // Fix missing quotes on keys (common streaming error: {name, "value"} -> {"name": "value"})
+      cleanStr = cleanStr.replace(/{\s*([a-zA-Z_][a-zA-Z0-9_]*)(\s*[,:}])/g, '{"$1"$2');
+      cleanStr = cleanStr.replace(/,\s*([a-zA-Z_][a-zA-Z0-9_]*)(\s*:)/g, ',"$1"$2');
+      
+      // Fix incomplete string quotes (e.g., {"name: "value"} -> {"name": "value"})
+      cleanStr = cleanStr.replace(/(["'])([^"']*?)([,:}])/g, (match, quote, content, ending) => {
+        if (!content.endsWith(quote)) return quote + content + quote + ending;
+        return match;
+      });
+      
       // Escape unescaped newlines inside string values
       cleanStr = cleanStr.replace(/\n/g, '\\n').replace(/\r/g, '');
+      
       return JSON.parse(cleanStr);
     } catch (e2) {
+      // 4. Last resort: try to extract key-value pairs manually
+      try {
+        const keyValuePairs = cleanStr.match(/(["']?[a-zA-Z_][a-zA-Z0-9_]*["']?)\s*:\s*(["'][^"']*["']|[^,}]+)/g);
+        if (keyValuePairs) {
+          const obj: any = {};
+          keyValuePairs.forEach(pair => {
+            const [key, value] = pair.split(':').map(s => s.trim());
+            const cleanKey = key.replace(/["']/g, '');
+            const cleanValue = value.replace(/^["']|["']$/g, '');
+            obj[cleanKey] = cleanValue;
+          });
+          console.warn("JSON Parse: Used fallback parser", obj);
+          return obj;
+        }
+      } catch (e3) {
+        // Final fallback
+      }
+      
       console.error("JSON Parse Failed:", cleanStr);
       throw new Error(`Invalid JSON format. Logic failed to repair: ${jsonStr.substring(0, 50)}...`);
     }
@@ -1420,56 +1450,95 @@ export const streamFixCodeWithGemini = async (
         // Add Assistant's thoughts/calls to history so it remembers what it did
         messages.push({ role: 'assistant', content: turnTextResponse });
 
-        // Execute Tools
+        // Execute Tools (parallel execution where safe)
+        const toolPromises: Promise<void>[] = [];
+        const toolResults: Array<{ toolName: string; output: string; change?: any; multiChanges?: any[] }> = [];
+        
         for (const tc of toolCallsInThisTurn) {
-          try {
-            if (!tc.name) continue;
-            
-            const args = tc.args ? safeJsonParse(tc.args) : {};
-            
-            // Emit parsed tool call for UI tracking
-            if (callbacks.onToolCalls) {
-              callbacks.onToolCalls([{ id: tc.id || generateUUID(), name: tc.name, args }]);
+          const executeToolPromise = (async () => {
+            try {
+              if (!tc.name) return;
+              
+              // Validate and sanitize args before parsing
+              let argsStr = tc.args || '{}';
+              argsStr = argsStr.trim();
+              
+              // Ensure args is a complete JSON object
+              if (!argsStr.startsWith('{')) argsStr = '{' + argsStr;
+              if (!argsStr.endsWith('}')) argsStr = argsStr + '}';
+              
+              const args = safeJsonParse(argsStr);
+              
+              // Emit parsed tool call for UI tracking
+              if (callbacks.onToolCalls) {
+                callbacks.onToolCalls([{ id: tc.id || generateUUID(), name: tc.name, args }]);
+              }
+
+              // Update status immediately for faster feedback
+              if (callbacks.onStatusUpdate) {
+                callbacks.onStatusUpdate(`⚡ Executing ${tc.name}...`);
+              }
+
+              // Execute logic with Status Update Callback
+              const { output, change, multiChanges } = executeToolAction(
+                tc.name,
+                args,
+                safeAllFiles,
+                logger,
+                knowledgeManager,
+                callbacks.onStatusUpdate // Pass the callback down!
+              ) as any;
+
+              // Store result for sequential processing
+              toolResults.push({ toolName: tc.name, output, change, multiChanges });
+              
+            } catch (e: any) {
+              console.error(`Tool execution failed in stream [${tc.name}]:`, e);
+              toolResults.push({ 
+                toolName: tc.name || 'unknown', 
+                output: `ERROR: ${e.message}` 
+              });
             }
-
-            // Execute logic with Status Update Callback
-            const { output, change, multiChanges } = executeToolAction(
-              tc.name,
-              args,
-              safeAllFiles,
-              logger,
-              knowledgeManager,
-              callbacks.onStatusUpdate // Pass the callback down!
-            ) as any;
-
-            // Emit changes if any
-            if (change && callbacks.onProposedChanges) {
-              callbacks.onProposedChanges([change]);
-              // Visual feedback in stream
-              const successMsg = `\n\n✅ [${tc.name}] Executed successfully\n`;
-              accumulatedGlobalStream += successMsg;
-              callbacks.onContent(successMsg);
-            } else if (multiChanges && Array.isArray(multiChanges) && callbacks.onProposedChanges) {
-              // Handle multi-patch changes
-              callbacks.onProposedChanges(multiChanges);
-              const successMsg = `\n\n✅ [${tc.name}] Applied ${multiChanges.length} changes\n`;
-              accumulatedGlobalStream += successMsg;
-              callbacks.onContent(successMsg);
-            } else if (!change && !multiChanges && tc.name !== 'list_files' && tc.name !== 'search_files' && tc.name !== 'read_file' && tc.name !== 'read_multiple_files' && tc.name !== 'save_knowledge') {
-              // Tool executed but no change (might be an error)
-              const feedbackMsg = `\n\n⚠️ [${tc.name}] ${output.slice(0, 100)}...\n`;
-              accumulatedGlobalStream += feedbackMsg;
-              callbacks.onContent(feedbackMsg);
-            }
-
-            // 3. Feed result back to LLM
-            messages.push({ role: 'user', content: `[Tool Result for ${tc.name}]: ${output}` });
-            
-          } catch (e: any) {
-            console.error("Tool execution failed in stream:", e);
-            messages.push({ role: 'user', content: `[Tool Error]: ${e.message}` });
-            if (callbacks.onStatusUpdate) callbacks.onStatusUpdate("❌ Tool Error");
+          })();
+          
+          // Determine if tool can run in parallel (read-only operations)
+          const readOnlyTools = ['list_files', 'search_files', 'read_file', 'read_multiple_files', 'save_knowledge', 'ask_question'];
+          if (readOnlyTools.includes(tc.name)) {
+            toolPromises.push(executeToolPromise);
+          } else {
+            // Execute write operations immediately and wait
+            await executeToolPromise;
           }
+        }
+        
+        // Wait for all parallel read operations to complete
+        if (toolPromises.length > 0) {
+          await Promise.all(toolPromises);
+        }
+        
+        // Process results sequentially for UI feedback and history
+        for (const result of toolResults) {
+          const { toolName, output, change, multiChanges } = result;
+          
+          // Emit changes if any
+          if (change && callbacks.onProposedChanges) {
+            callbacks.onProposedChanges([change]);
+            const successMsg = `\n\n✅ [${toolName}] Executed successfully\n`;
+            accumulatedGlobalStream += successMsg;
+            callbacks.onContent(successMsg);
+          } else if (multiChanges && Array.isArray(multiChanges) && callbacks.onProposedChanges) {
+            callbacks.onProposedChanges(multiChanges);
+            const successMsg = `\n\n✅ [${toolName}] Applied ${multiChanges.length} changes\n`;
+            accumulatedGlobalStream += successMsg;
+            callbacks.onContent(successMsg);
+          } else if (!change && !multiChanges && !['list_files', 'search_files', 'read_file', 'read_multiple_files', 'save_knowledge'].includes(toolName)) {
+            const feedbackMsg = `\n\n⚠️ [${toolName}] ${output.slice(0, 100)}...\n`;
+            accumulatedGlobalStream += feedbackMsg;
+            callbacks.onContent(feedbackMsg);
+          }
+
+          // Feed result back to LLM
+          messages.push({ role: 'user', content: `[Tool Result for ${toolName}]: ${output}` });
         }
         // Loop continues to next turn to let LLM see the tool output and decide next steps
       }

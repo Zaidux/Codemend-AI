@@ -23,6 +23,19 @@ export const useTerminal = (projectFiles: ProjectFile[] = []) => {
   const outputEndRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
 
+  // Initialize execution service on mount
+  useEffect(() => {
+    const initExecutionService = async () => {
+      try {
+        await executionService.initialize();
+        console.log('✅ Execution service initialized');
+      } catch (error) {
+        console.warn('Execution service initialization failed:', error);
+      }
+    };
+    initExecutionService();
+  }, []);
+
   // Save custom commands to localStorage whenever they change
   useEffect(() => {
     localStorage.setItem('cm_custom_terminal_commands', JSON.stringify(customCommands));

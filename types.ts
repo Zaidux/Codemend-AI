@@ -138,6 +138,9 @@ export interface Session {
   type?: 'chat' | 'planner' | 'delegated'; // Session type
   plannerSessionId?: string; // Link to parent planner session (for delegated tasks)
   delegatedTaskIds?: string[]; // Tasks delegated from this planner session
+  createdAt?: number; // Track creation time
+  tags?: string[]; // User-defined tags for organization
+  archived?: boolean; // Archive old sessions
 }
 
 export interface DelegatedTask {
@@ -151,6 +154,8 @@ export interface DelegatedTask {
   status: 'pending_approval' | 'approved' | 'in_progress' | 'verifying' | 'completed' | 'failed';
   targetProjectId?: string; // Which project to execute in (can be new)
   codingSessionId?: string; // The session where coding happens
+  filesToModify?: string[]; // List of files to modify
+  dependencies?: string[]; // Dependencies or prerequisites
   createdAt: number;
   startedAt?: number;
   completedAt?: number;
@@ -170,10 +175,29 @@ export interface VerificationResult {
 
 export interface PlannerKnowledge {
   plannerSessionId: string;
+  projectId: string;
   projectAnalysis?: string;
-  decisionsLog: string[]; // Track planner's decisions
-  delegationHistory: DelegatedTask[];
+  decisionsLog: Array<{
+    decision: string;
+    reasoning: string;
+    timestamp: number;
+    relatedFiles?: string[];
+  }>; // Track planner's decisions with context
+  delegationHistory: Array<{
+    taskId: string;
+    title: string;
+    status: DelegatedTask['status'];
+    timestamp: number;
+  }>;
   verificationsPerformed: number;
+  filesAnalyzed: string[]; // Track which files the planner has reviewed
+  insightsGenerated: Array<{
+    insight: string;
+    category: 'architecture' | 'performance' | 'security' | 'best-practice' | 'bug' | 'optimization';
+    timestamp: number;
+  }>;
+  relatedSessions: string[]; // Other planner/coding sessions related to this knowledge
+  createdAt: number;
   lastUpdated: number;
 }
 
@@ -324,4 +348,43 @@ export interface FixResponse {
   contextSummarized?: boolean;
   proposedChanges?: FileDiff[];
   searchResults?: SearchResult[];
+}
+// Terminal and Execution Types
+export interface ExecutionResult {
+  success: boolean;
+  output: string;
+  error?: string;
+  duration: number;
+  exitCode?: number;
+  metadata?: Record<string, any>;
+}
+
+export interface ExecutionConfig {
+  timeout?: number;
+  captureOutput?: boolean;
+  cwd?: string;
+}
+
+export interface TerminalOutputLine {
+  text: string;
+  type: 'output' | 'error' | 'info';
+  timestamp: number;
+}
+
+export interface TerminalState {
+  isOpen: boolean;
+  isExecuting: boolean;
+  output: TerminalOutputLine[];
+  currentDirectory: string;
+  commandHistory: string[];
+  historyIndex: number;
+  input: string;
+  autoScroll: boolean;
+}
+
+export interface TerminalCommand {
+  command: string;
+  description: string;
+  usage?: string;
+  examples?: string[];
 }

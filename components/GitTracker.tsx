@@ -1,7 +1,8 @@
 import React, { useState, useEffect } from 'react';
 import { X, GitBranch, GitCommit, Upload, Download, CheckCircle, AlertCircle, RefreshCw, Loader2, CheckCheck } from 'lucide-react';
-import { Project, ProjectFile, CodeLanguage } from '../types';
+import { Project, ProjectFile, CodeLanguage, FileChange } from '../types';
 import { GitHubService, parseGitHubUrl } from '../services/githubApiService';
+import { GitService } from '../services/gitService';
 
 interface GitTrackerProps {
   isOpen: boolean;
@@ -24,18 +25,56 @@ export const GitTracker: React.FC<GitTrackerProps> = ({
 }) => {
   const [commitMessage, setCommitMessage] = useState('');
   const [selectedFiles, setSelectedFiles] = useState<string[]>([]);
-  const [modifiedFiles, setModifiedFiles] = useState<string[]>([]);
+  const [gitChanges, setGitChanges] = useState<FileChange[]>([]);
   const [remoteChanges, setRemoteChanges] = useState(false);
   const [checkingRemote, setCheckingRemote] = useState(false);
   const [pushing, setPushing] = useState(false);
   const [pulling, setPulling] = useState(false);
+  const [loadingStatus, setLoadingStatus] = useState(false);
   const [gitHubService] = useState(() => GitHubService.getInstance());
+  const [gitService] = useState(() => GitService.getInstance());
   const [isAuthenticated, setIsAuthenticated] = useState(false);
   const [commitCount, setCommitCount] = useState(0);
+  const [localCommitCount, setLocalCommitCount] = useState(0);
 
   useEffect(() => {
     setIsAuthenticated(gitHubService.isAuthenticated());
   }, [gitHubService]);
+
+  const loadGitStatus = async () => {
+    setLoadingStatus(true);
+    try {
+      // Initialize git if not already initialized
+      await gitService.init(currentProject.id, {
+        remoteUrl: currentProject.githubUrl,
+        branch: 'main'
+      });
+
+      // Get actual git status
+      const status = await gitService.getStatus(currentProject.id, currentProject.files);
+      setGitChanges(status.changes);
+      setLocalCommitCount(status.ahead);
+      
+      // If no changes detected, commit current state as baseline
+      if (status.changes.length === 0 && currentProject.files.length > 0) {
+        const hasInitialCommit = await gitService.hasCommits(currentProject.id);
+        if (!hasInitialCommit) {
+          await gitService.commit(
+            currentProject.id, 
+            'Initial commit - Baseline',
+            currentProject.files
+          );
+          // Reload status after initial commit
+          const newStatus = await gitService.getStatus(currentProject.id, currentProject.files);
+          setGitChanges(newStatus.changes);
+        }
+      }
+    } catch (error) {
+      console.error('Failed to load git status:', error);
+    } finally {
+      setLoadingStatus(false);
+    }
+  };
 
   const checkRemoteChanges = async () => {
     if (!currentProject.githubUrl || !isAuthenticated) return;
@@ -44,12 +83,23 @@ export const GitTracker: React.FC<GitTrackerProps> = ({
     try {
       const parsed = parseGitHubUrl(currentProject.githubUrl);
       if (parsed) {
-        const commits = await gitHubService.getCommits(parsed.owner, parsed.repo, 'main', 5);
+        // Get remote commits
+        const commits = await gitHubService.getCommits(parsed.owner, parsed.repo, 'main', 10);
         setCommitCount(commits.length);
         
-        // Compare with local files to detect if remote is ahead
-        // In a real implementation, you'd compare commit SHAs
-        setRemoteChanges(commits.length > 0);
+        // Get local commits
+        const localCommits = await gitService.getCommits(currentProject.id);
+        const localHeadSha = localCommits[localCommits.length - 1]?.id;
+        
+        // Check if remote has commits we don't have locally
+        // In a real git system, we'd compare commit SHAs
+        // Here we use commit count as a simple heuristic
+        const hasNewRemoteCommits = commits.length > 0 && (
+          !localHeadSha || 
+          commits.some(c => !localCommits.find(lc => lc.message === c.commit.message))
+        );
+        
+        setRemoteChanges(hasNewRemoteCommits);
       }
     } catch (error) {
       console.warn('Failed to check remote changes:', error);
@@ -88,7 +138,8 @@ export const GitTracker: React.FC<GitTrackerProps> = ({
       setCommitMessage('');
       alert(`Successfully pushed ${filesToPush.length} file(s) to GitHub!`);
       
-      // Refresh remote status
+      // Refresh git status and remote status
+      await loadGitStatus();
       await checkRemoteChanges();
     } catch (error: any) {
       console.error('Push failed:', error);
@@ -126,6 +177,9 @@ export const GitTracker: React.FC<GitTrackerProps> = ({
       
       alert(`Successfully pulled ${projectFiles.length} file(s) from GitHub!`);
       setRemoteChanges(false);
+      
+      // Reload git status after pulling
+      await loadGitStatus();
     } catch (error: any) {
       console.error('Pull failed:', error);
       alert(`Failed to pull: ${error.message}`);
@@ -153,11 +207,8 @@ export const GitTracker: React.FC<GitTrackerProps> = ({
 
   useEffect(() => {
     if (isOpen) {
-      // Detect modified files (files changed in the app)
-      const modified = currentProject.files
-        .filter(f => f.content && f.content.length > 0)
-        .map(f => f.name);
-      setModifiedFiles(modified);
+      // Load actual git status
+      loadGitStatus();
       
       // Check for remote changes
       checkRemoteChanges();
@@ -196,9 +247,19 @@ export const GitTracker: React.FC<GitTrackerProps> = ({
               </p>
             </div>
           </div>
-          <button onClick={onClose} className={`p-2 rounded-lg hover:bg-white/5 ${theme.textMuted} hover:text-white transition-colors`}>
-            <X className="w-5 h-5" />
-          </button>
+          <div className="flex items-center gap-2">
+            <button 
+              onClick={loadGitStatus}
+              disabled={loadingStatus}
+              className={`p-2 rounded-lg hover:bg-white/5 ${theme.textMuted} hover:text-blue-400 transition-colors disabled:opacity-50`}
+              title="Refresh Git Status"
+            >
+              <RefreshCw className={`w-5 h-5 ${loadingStatus ? 'animate-spin' : ''}`} />
+            </button>
+            <button onClick={onClose} className={`p-2 rounded-lg hover:bg-white/5 ${theme.textMuted} hover:text-white transition-colors`}>
+              <X className="w-5 h-5" />
+            </button>
+          </div>
         </div>
 
         {/* Status Banner */}
@@ -213,7 +274,7 @@ export const GitTracker: React.FC<GitTrackerProps> = ({
               <>
                 <AlertCircle className="w-4 h-4 text-yellow-400" />
                 <span className="text-sm text-yellow-400">
-                  Remote changes detected. Click to pull latest updates.
+                  Remote has {commitCount} commit(s). Click to pull latest updates.
                 </span>
                 <button 
                   onClick={handlePull}
@@ -226,7 +287,7 @@ export const GitTracker: React.FC<GitTrackerProps> = ({
             ) : (
               <>
                 <CheckCircle className="w-4 h-4 text-green-400" />
-                <span className="text-sm text-green-400">Repository up to date</span>
+                <span className="text-sm text-green-400">Repository up to date ({localCommitCount} local commit{localCommitCount !== 1 ? 's' : ''})</span>
                 <button 
                   onClick={checkRemoteChanges}
                   className="ml-auto px-3 py-1 rounded bg-blue-500/20 text-blue-400 hover:bg-blue-500/30 transition-colors text-sm flex items-center gap-1"
@@ -243,18 +304,32 @@ export const GitTracker: React.FC<GitTrackerProps> = ({
           <div>
             <h3 className={`text-sm font-semibold ${theme.textMuted} mb-3 uppercase tracking-wider flex items-center gap-2`}>
               <RefreshCw className="w-4 h-4" />
-              Modified Files ({modifiedFiles.length})
+              Changes ({gitChanges.length})
+              {loadingStatus && <Loader2 className="w-3 h-3 animate-spin" />}
             </h3>
             
-            {modifiedFiles.length === 0 ? (
+            {gitChanges.length === 0 ? (
               <div className={`text-center py-8 ${theme.textMuted} opacity-50`}>
                 <CheckCircle className="w-12 h-12 mx-auto mb-2" />
-                <p>No modified files</p>
+                <p>No changes detected</p>
+                <p className="text-xs mt-1">Working tree clean</p>
               </div>
             ) : (
               <div className="space-y-2">
-                {modifiedFiles.map(fileName => {
+                {gitChanges.map(change => {
+                  const fileName = change.file.name;
                   const isSelected = selectedFiles.includes(fileName);
+                  const statusColor = {
+                    'added': 'green',
+                    'modified': 'orange',
+                    'deleted': 'red'
+                  }[change.type];
+                  const statusLabel = {
+                    'added': 'A',
+                    'modified': 'M',
+                    'deleted': 'D'
+                  }[change.type];
+                  
                   return (
                     <div
                       key={fileName}
@@ -273,10 +348,10 @@ export const GitTracker: React.FC<GitTrackerProps> = ({
                         </div>
                         <div className="flex-1">
                           <p className={`text-sm font-medium ${theme.textMain}`}>{fileName}</p>
-                          <p className={`text-xs ${theme.textMuted}`}>Modified</p>
+                          <p className={`text-xs ${theme.textMuted} capitalize`}>{change.type}</p>
                         </div>
-                        <div className="px-2 py-1 rounded text-xs bg-orange-500/20 text-orange-400 border border-orange-500/30">
-                          M
+                        <div className={`px-2 py-1 rounded text-xs bg-${statusColor}-500/20 text-${statusColor}-400 border border-${statusColor}-500/30 font-mono`}>
+                          {statusLabel}
                         </div>
                       </div>
                     </div>

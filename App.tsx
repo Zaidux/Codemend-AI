@@ -196,6 +196,24 @@ const App: React.FC = () => {
   useEffect(() => { localStorage.setItem('cm_project_summaries', JSON.stringify(projectSummaries)); }, [projectSummaries]);
   useEffect(() => { localStorage.setItem('cm_use_compression', String(useCompression)); }, [useCompression]);
 
+  // Initialize Git for all projects
+  useEffect(() => {
+    const initGitForProjects = async () => {
+      const gitService = GitService.getInstance();
+      for (const project of projects) {
+        await gitService.init(project.id, {
+          remoteUrl: project.githubUrl,
+          branch: 'main',
+          userName: 'Codemend User',
+          userEmail: 'user@codemend.ai'
+        });
+      }
+    };
+    if (projects.length > 0) {
+      initGitForProjects();
+    }
+  }, [projects.length]); // Only run when project count changes
+
   useEffect(() => {
      if (!sessions.find(s => s.projectId === currentProjectId)) {
          const newSess = createNewSession(currentProjectId);
@@ -616,6 +634,16 @@ const App: React.FC = () => {
           phase: phase || 'Planner',
           status: status || 'pending'
         });
+        // Track in knowledge graph
+        if (currentPlannerSessionId) {
+          getOrCreateKnowledgeEntry(currentPlannerSessionId, activeProject.id);
+          addDecisionToKnowledge(
+            currentPlannerSessionId,
+            `Created todo: ${title}`,
+            `Priority: ${priority}, Phase: ${phase || 'Planner'}`,
+            []
+          );
+        }
       } else if (call.name === 'update_todo_status' && call.metadata) {
         // Planner updated a todo
         const { todoId, status, completionPercentage } = call.metadata;
@@ -637,9 +665,58 @@ const App: React.FC = () => {
           priority,
           status: 'pending_approval',
           targetProjectId: targetProject === 'new' ? undefined : activeProject.id,
+          filesToModify,
           createdAt: Date.now()
         };
         newDelegatedTasks.push(newTask);
+        
+        // Track delegation in knowledge graph
+        if (currentPlannerSessionId) {
+          getOrCreateKnowledgeEntry(currentPlannerSessionId, activeProject.id);
+          addDecisionToKnowledge(
+            currentPlannerSessionId,
+            `Delegated task: ${title}`,
+            `Priority: ${priority}, Estimated: ${estimatedTime}, Files: ${filesToModify?.length || 0}`,
+            filesToModify
+          );
+          setPlannerKnowledge(prev => {
+            const current = prev[currentPlannerSessionId];
+            if (!current) return prev;
+            return {
+              ...prev,
+              [currentPlannerSessionId]: {
+                ...current,
+                delegationHistory: [
+                  ...current.delegationHistory,
+                  {
+                    taskId,
+                    title,
+                    status: 'pending_approval',
+                    timestamp: Date.now()
+                  }
+                ],
+                lastUpdated: Date.now()
+              }
+            };
+          });
+        }
+      } else if (call.name === 'read_file' && call.args?.fileName && currentPlannerSessionId) {
+        // Track file analysis
+        trackFileAnalysis(currentPlannerSessionId, call.args.fileName);
+      } else if (call.name === 'verify_implementation' && call.metadata && currentPlannerSessionId) {
+        // Track verification
+        setPlannerKnowledge(prev => {
+          const current = prev[currentPlannerSessionId];
+          if (!current) return prev;
+          return {
+            ...prev,
+            [currentPlannerSessionId]: {
+              ...current,
+              verificationsPerformed: current.verificationsPerformed + 1,
+              lastUpdated: Date.now()
+            }
+          };
+        });
       }
     });
 
@@ -1005,10 +1082,13 @@ You can review the implementation in the coding session.
         ...updates,
         id: crypto.randomUUID(),
         type: 'planner',
+        createdAt: Date.now(),
         lastModified: Date.now()
       };
       setPlannerSessions(prev => [...prev, newSession]);
       setCurrentPlannerSessionId(newSession.id);
+      // Initialize knowledge graph for new planner session
+      getOrCreateKnowledgeEntry(newSession.id, activeProject.id);
     } else {
       setPlannerSessions(prev => 
         prev.map(s => s.id === activePlannerSession.id 
@@ -1093,6 +1173,20 @@ You can review the implementation in the coding session.
       prev.map(t => t.id === task.id ? { ...t, codingSessionId: newSession.id, status: 'in_progress' } : t)
     );
 
+    // Link sessions in knowledge graph
+    linkSessions(task.plannerSessionId, newSession.id);
+
+    // Update planner session with delegation reference
+    setPlannerSessions(prev =>
+      prev.map(s => s.id === task.plannerSessionId
+        ? { 
+            ...s, 
+            delegatedTaskIds: [...(s.delegatedTaskIds || []), task.id]
+          }
+        : s
+      )
+    );
+
     // Switch to coding session
     setCurrentSessionId(newSession.id);
     setShowPlannerRoom(false);
@@ -1141,6 +1235,234 @@ You can review the implementation in the coding session.
 
   const handleCancelTask = (taskId: string) => {
     setDelegatedTasks(prev => prev.filter(t => t.id !== taskId));
+  };
+
+  // --- KNOWLEDGE GRAPH FUNCTIONS ---
+
+  /**
+   * Initialize or get knowledge entry for a planner session
+   */
+  const getOrCreateKnowledgeEntry = (plannerSessionId: string, projectId: string): PlannerKnowledge => {
+    if (plannerKnowledge[plannerSessionId]) {
+      return plannerKnowledge[plannerSessionId];
+    }
+
+    const newKnowledge: PlannerKnowledge = {
+      plannerSessionId,
+      projectId,
+      decisionsLog: [],
+      delegationHistory: [],
+      verificationsPerformed: 0,
+      filesAnalyzed: [],
+      insightsGenerated: [],
+      relatedSessions: [],
+      createdAt: Date.now(),
+      lastUpdated: Date.now()
+    };
+
+    setPlannerKnowledge(prev => ({ ...prev, [plannerSessionId]: newKnowledge }));
+    return newKnowledge;
+  };
+
+  /**
+   * Add a decision to the knowledge graph
+   */
+  const addDecisionToKnowledge = (
+    plannerSessionId: string, 
+    decision: string, 
+    reasoning: string, 
+    relatedFiles?: string[]
+  ) => {
+    setPlannerKnowledge(prev => {
+      const current = prev[plannerSessionId];
+      if (!current) return prev;
+
+      return {
+        ...prev,
+        [plannerSessionId]: {
+          ...current,
+          decisionsLog: [
+            ...current.decisionsLog,
+            {
+              decision,
+              reasoning,
+              timestamp: Date.now(),
+              relatedFiles
+            }
+          ],
+          lastUpdated: Date.now()
+        }
+      };
+    });
+  };
+
+  /**
+   * Add an insight to the knowledge graph
+   */
+  const addInsightToKnowledge = (
+    plannerSessionId: string,
+    insight: string,
+    category: 'architecture' | 'performance' | 'security' | 'best-practice' | 'bug' | 'optimization'
+  ) => {
+    setPlannerKnowledge(prev => {
+      const current = prev[plannerSessionId];
+      if (!current) return prev;
+
+      return {
+        ...prev,
+        [plannerSessionId]: {
+          ...current,
+          insightsGenerated: [
+            ...current.insightsGenerated,
+            {
+              insight,
+              category,
+              timestamp: Date.now()
+            }
+          ],
+          lastUpdated: Date.now()
+        }
+      };
+    });
+  };
+
+  /**
+   * Track file analysis in knowledge graph
+   */
+  const trackFileAnalysis = (plannerSessionId: string, fileName: string) => {
+    setPlannerKnowledge(prev => {
+      const current = prev[plannerSessionId];
+      if (!current) return prev;
+
+      if (current.filesAnalyzed.includes(fileName)) return prev;
+
+      return {
+        ...prev,
+        [plannerSessionId]: {
+          ...current,
+          filesAnalyzed: [...current.filesAnalyzed, fileName],
+          lastUpdated: Date.now()
+        }
+      };
+    });
+  };
+
+  /**
+   * Link related sessions in knowledge graph
+   */
+  const linkSessions = (plannerSessionId: string, relatedSessionId: string) => {
+    setPlannerKnowledge(prev => {
+      const current = prev[plannerSessionId];
+      if (!current) return prev;
+
+      if (current.relatedSessions.includes(relatedSessionId)) return prev;
+
+      return {
+        ...prev,
+        [plannerSessionId]: {
+          ...current,
+          relatedSessions: [...current.relatedSessions, relatedSessionId],
+          lastUpdated: Date.now()
+        }
+      };
+    });
+  };
+
+  /**
+   * Search planner sessions by content, tags, or date range
+   */
+  const searchPlannerSessions = (
+    query: string,
+    options?: {
+      tags?: string[];
+      dateFrom?: number;
+      dateTo?: number;
+      projectId?: string;
+    }
+  ): Session[] => {
+    const lowerQuery = query.toLowerCase();
+
+    return plannerSessions.filter(session => {
+      // Text search in title and messages
+      const textMatch = !query || 
+        session.title.toLowerCase().includes(lowerQuery) ||
+        session.messages.some(m => m.content.toLowerCase().includes(lowerQuery));
+
+      // Tag filter
+      const tagMatch = !options?.tags || 
+        options.tags.some(tag => session.tags?.includes(tag));
+
+      // Date range filter
+      const dateMatch = (!options?.dateFrom || session.createdAt! >= options.dateFrom) &&
+                       (!options?.dateTo || session.createdAt! <= options.dateTo);
+
+      // Project filter
+      const projectMatch = !options?.projectId || session.projectId === options.projectId;
+
+      return textMatch && tagMatch && dateMatch && projectMatch;
+    });
+  };
+
+  /**
+   * Export planner session with full knowledge graph
+   */
+  const exportPlannerSession = (sessionId: string) => {
+    const session = plannerSessions.find(s => s.id === sessionId);
+    if (!session) return;
+
+    const knowledge = plannerKnowledge[sessionId];
+    const relatedTasks = delegatedTasks.filter(t => t.plannerSessionId === sessionId);
+    const relatedCodingSessions = sessions.filter(s => s.plannerSessionId === sessionId);
+
+    const exportData = {
+      session,
+      knowledge,
+      delegatedTasks: relatedTasks,
+      codingSessions: relatedCodingSessions,
+      exportedAt: Date.now(),
+      version: '1.0'
+    };
+
+    const blob = new Blob([JSON.stringify(exportData, null, 2)], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `planner-session-${session.title.replace(/[^a-z0-9]/gi, '-').toLowerCase()}-${new Date().toISOString().split('T')[0]}.json`;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+  };
+
+  /**
+   * Archive old planner sessions
+   */
+  const archivePlannerSession = (sessionId: string) => {
+    setPlannerSessions(prev =>
+      prev.map(s => s.id === sessionId ? { ...s, archived: true } : s)
+    );
+  };
+
+  /**
+   * Get planner session statistics
+   */
+  const getPlannerSessionStats = (sessionId: string) => {
+    const session = plannerSessions.find(s => s.id === sessionId);
+    const knowledge = plannerKnowledge[sessionId];
+    const tasks = delegatedTasks.filter(t => t.plannerSessionId === sessionId);
+
+    if (!session || !knowledge) return null;
+
+    return {
+      totalMessages: session.messages.length,
+      decisionsLogged: knowledge.decisionsLog.length,
+      tasksCreated: tasks.length,
+      tasksCompleted: tasks.filter(t => t.status === 'completed').length,
+      verificationsRun: knowledge.verificationsPerformed,
+      filesAnalyzed: knowledge.filesAnalyzed.length,
+      insightsGenerated: knowledge.insightsGenerated.length,
+      duration: session.lastModified - (session.createdAt || session.lastModified)
+    };
   };
 
   // --- RENDER ---

@@ -86,10 +86,12 @@ export class ExecutionService {
   ): Promise<ExecutionResult> {
     const startTime = performance.now();
     
+    // FIXED: Declare output and errors arrays at function scope
+    const output: string[] = [];
+    const errors: string[] = [];
+    
     try {
       // Create a safe execution environment
-      const output: string[] = [];
-      const errors: string[] = [];
 
       // Override console methods to capture output
       const originalConsole = {
@@ -104,7 +106,7 @@ export class ExecutionService {
         const message = args.map(arg => 
           typeof arg === 'object' ? JSON.stringify(arg, null, 2) : String(arg)
         ).join(' ');
-        output.push(`[LOG] ${message}`);
+        output.push(message);
         originalConsole.log(...args);
       };
 
@@ -112,7 +114,7 @@ export class ExecutionService {
         const message = args.map(arg => 
           typeof arg === 'object' ? JSON.stringify(arg, null, 2) : String(arg)
         ).join(' ');
-        errors.push(`[ERROR] ${message}`);
+        errors.push(`❌ ${message}`);
         originalConsole.error(...args);
       };
 
@@ -120,8 +122,16 @@ export class ExecutionService {
         const message = args.map(arg => 
           typeof arg === 'object' ? JSON.stringify(arg, null, 2) : String(arg)
         ).join(' ');
-        output.push(`[WARN] ${message}`);
+        output.push(`⚠️ ${message}`);
         originalConsole.warn(...args);
+      };
+      
+      console.info = (...args) => {
+        const message = args.map(arg => 
+          typeof arg === 'object' ? JSON.stringify(arg, null, 2) : String(arg)
+        ).join(' ');
+        output.push(`ℹ️ ${message}`);
+        originalConsole.info(...args);
       };
 
       // Create a safe execution context
@@ -130,9 +140,9 @@ export class ExecutionService {
       try {
         // Execute the main file
         if (mainFile.language === CodeLanguage.TYPESCRIPT) {
-          // For TypeScript, we would need to transpile first
-          // For now, we'll try to execute as JavaScript
-          await this.executeInContext(mainFile.content, context);
+          // For TypeScript, strip type annotations for basic execution
+          const jsCode = this.stripTypeAnnotations(mainFile.content);
+          await this.executeInContext(jsCode, context);
         } else {
           await this.executeInContext(mainFile.content, context);
         }
@@ -147,8 +157,8 @@ export class ExecutionService {
 
         return {
           success: errors.length === 0,
-          output: output.join('\n'),
-          error: errors.join('\n') || undefined,
+          output: output.length > 0 ? output.join('\n') : '(No output)',
+          error: errors.length > 0 ? errors.join('\n') : undefined,
           duration,
           exitCode: errors.length > 0 ? 1 : 0
         };
@@ -161,13 +171,25 @@ export class ExecutionService {
         console.info = originalConsole.info;
 
         // Provide detailed error information
-        const errorMessage = `${executionError.name}: ${executionError.message}`;
+        const errorName = executionError.name || 'Error';
+        const errorMessage = executionError.message || 'Unknown error';
         const stackTrace = executionError.stack || '';
-        errors.push(errorMessage);
-        errors.push('\\nStack Trace:');
-        errors.push(stackTrace);
+        
+        errors.push(`${errorName}: ${errorMessage}`);
+        if (stackTrace) {
+          const stackLines = stackTrace.split('\n').slice(1, 5); // First few stack frames
+          errors.push(...stackLines.map(line => '  ' + line.trim()));
+        }
 
-        throw executionError;
+        const duration = performance.now() - startTime;
+
+        return {
+          success: false,
+          output: output.join('\n'),
+          error: errors.join('\n'),
+          duration,
+          exitCode: 1
+        };
       }
 
     } catch (error: any) {
@@ -345,38 +367,77 @@ export class ExecutionService {
       Date: Date,
       Math: Math,
       JSON: JSON,
+      Array: Array,
+      Object: Object,
+      String: String,
+      Number: Number,
+      Boolean: Boolean,
+      RegExp: RegExp,
+      Promise: Promise,
+      Map: Map,
+      Set: Set,
+      WeakMap: WeakMap,
+      WeakSet: WeakSet,
+      Error: Error,
+      TypeError: TypeError,
+      RangeError: RangeError,
+      SyntaxError: SyntaxError,
+      parseInt: parseInt,
+      parseFloat: parseFloat,
+      isNaN: isNaN,
+      isFinite: isFinite,
       // Add other safe globals as needed
     };
-
-    // Block dangerous APIs
-    const blockedApis = [
-      'fetch', 'XMLHttpRequest', 'WebSocket', 'Worker', 'importScripts',
-      'document', 'window', 'localStorage', 'sessionStorage', 'indexedDB',
-      'eval', 'Function', 'WebAssembly', 'require' // Node.js specific
-    ];
-
-    blockedApis.forEach(api => {
-      (context as any)[api] = undefined;
-    });
 
     return context;
   }
 
+  // Strip TypeScript type annotations for basic execution
+  private stripTypeAnnotations(code: string): string {
+    // Basic TypeScript stripping - remove common type annotations
+    let jsCode = code;
+    
+    // Remove type annotations from variable declarations
+    jsCode = jsCode.replace(/:\s*\w+(\[\])?(\s*=)/g, '$2');
+    
+    // Remove interface and type declarations
+    jsCode = jsCode.replace(/interface\s+\w+\s*{[^}]*}/g, '');
+    jsCode = jsCode.replace(/type\s+\w+\s*=\s*[^;]+;/g, '');
+    
+    // Remove function return type annotations
+    jsCode = jsCode.replace(/\):\s*\w+(\[\])?\s*{/g, ') {');
+    
+    // Remove generic type parameters
+    jsCode = jsCode.replace(/<[^>]+>/g, '');
+    
+    // Remove 'as' type assertions
+    jsCode = jsCode.replace(/\s+as\s+\w+/g, '');
+    
+    return jsCode;
+  }
+
   // Execute code in a safe context
   private async executeInContext(code: string, context: any): Promise<void> {
-    // Create a function with the code and bind it to the safe context
-    const func = new Function(...Object.keys(context), `
-      "use strict";
-      try {
+    try {
+      // Create a function with the code and bind it to the safe context
+      // We wrap the code in a function to create a clean scope
+      const contextKeys = Object.keys(context);
+      const contextValues = Object.values(context);
+      
+      const func = new Function(...contextKeys, `
+        "use strict";
         ${code}
-      } catch (error) {
-        console.error('Uncaught Error:', error.message);
-        throw error;
-      }
-    `);
+      `);
 
-    // Execute with the safe context
-    return func(...Object.values(context));
+      // Execute with the safe context
+      await func(...contextValues);
+    } catch (error: any) {
+      // Re-throw with better error message
+      const enhancedError = new Error(error.message);
+      enhancedError.name = error.name || 'RuntimeError';
+      enhancedError.stack = error.stack;
+      throw enhancedError;
+    }
   }
 
   // Create Web Worker for safer execution (placeholder)
