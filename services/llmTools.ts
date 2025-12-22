@@ -17,30 +17,30 @@ export const UNIVERSAL_TOOL_DEFINITIONS = {
   },
   update_file: {
     name: 'update_file',
-    description: 'Overwrite an existing file. WARNING: You must provide the FULL file content. Do NOT use "// ... existing code" or lazy formatting. This tool REPLACES the file.',
+    description: '⚠️ COMPLETELY REPLACE an existing file. CRITICAL: You MUST provide EVERY SINGLE LINE of the file - not partial content! Read the file first if you need to see it. NEVER use placeholders like "// ... existing code", "// rest of file", or "/* keep existing */". This tool will DELETE everything and replace with your content parameter. If you provide partial content, you will DESTROY the file!',
     parameters: {
       type: Type.OBJECT,
       properties: {
         name: { type: Type.STRING, description: 'The file path to update' },
-        content: { type: Type.STRING, description: 'The NEW COMPLETE content of the file.' }
+        content: { type: Type.STRING, description: '⚠️ The COMPLETE NEW CONTENT - every import, every function, every line. Nothing will be preserved unless you include it here!' }
       },
       required: ['name', 'content']
     }
   },
   apply_multi_patch: {
     name: 'apply_multi_patch',
-    description: 'Apply multiple file updates in a single atomic operation. More efficient than multiple update_file calls. All changes succeed or all fail (rollback). Use this when you need to modify 2+ files simultaneously.',
+    description: '⚠️ Update multiple files atomically. CRITICAL: Each file content must be COMPLETE - every line, no placeholders! This is NOT a diff tool - it REPLACES entire files. Read files first if needed. All changes succeed or all fail (rollback). More efficient than multiple update_file calls.',
     parameters: {
       type: Type.OBJECT,
       properties: {
         patches: {
           type: Type.ARRAY,
-          description: 'Array of file patches to apply',
+          description: 'Array of complete file replacements (not diffs)',
           items: {
             type: Type.OBJECT,
             properties: {
               file: { type: Type.STRING, description: 'File path to update' },
-              content: { type: Type.STRING, description: 'NEW COMPLETE content of the file (not a diff)' }
+              content: { type: Type.STRING, description: '⚠️ COMPLETE file content - every import, function, and line. No "// ... existing code" allowed!' }
             },
             required: ['file', 'content']
           }

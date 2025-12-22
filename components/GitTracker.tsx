@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { X, GitBranch, GitCommit, Upload, Download, CheckCircle, AlertCircle, RefreshCw, Loader2, CheckCheck } from 'lucide-react';
+import { X, GitBranch, GitCommit, Upload, Download, CheckCircle, AlertCircle, RefreshCw, Loader2, CheckCheck, Sparkles } from 'lucide-react';
 import { Project, ProjectFile, CodeLanguage, FileChange } from '../types';
 import { GitHubService, parseGitHubUrl } from '../services/githubApiService';
 import { GitService } from '../services/gitService';
@@ -239,75 +239,89 @@ export const GitTracker: React.FC<GitTrackerProps> = ({
 
   if (!isOpen) return null;
 
+  const hasGitHubUrl = Boolean(currentProject.githubUrl);
+  const canPull = hasGitHubUrl && isAuthenticated;
+  const canPush = hasGitHubUrl && isAuthenticated && selectedFiles.length > 0;
+
   return (
-    <div className="fixed inset-0 z-[9999] flex items-center justify-center p-4 bg-black/80 backdrop-blur-sm">
-      <div className={`${theme.bgApp} border ${theme.border} rounded-2xl w-full max-w-2xl max-h-[85vh] flex flex-col shadow-2xl`}>
+    <div className="fixed inset-0 z-[9999] flex items-center justify-center p-4 bg-black/80 backdrop-blur-sm animate-fadeIn">
+      <div className={`${theme.bgApp} border ${theme.border} rounded-2xl w-full max-w-2xl max-h-[85vh] flex flex-col shadow-2xl backdrop-blur-xl animate-slideUp`}>
+        {/* Animated gradient border effect */}
+        <div className="absolute inset-0 rounded-2xl bg-gradient-to-r from-blue-500/20 via-purple-500/20 to-pink-500/20 blur-xl opacity-50 animate-pulse pointer-events-none" />
+        
+        <div className="relative z-10 flex flex-col h-full bg-inherit rounded-2xl">
         {/* Header */}
         <div className={`flex items-center justify-between p-6 border-b ${theme.border}`}>
           <div className="flex items-center gap-3">
-            <GitBranch className="w-6 h-6 text-green-400" />
+            <div className="relative">
+              <GitBranch className="w-6 h-6 text-green-400" />
+              {loadingStatus && (
+                <div className="absolute -inset-1 bg-green-400/30 rounded-full blur animate-ping" />
+              )}
+            </div>
             <div>
-              <h2 className={`text-xl font-bold ${theme.textMain}`}>Git Changes Tracker</h2>
-              <p className={`text-sm ${theme.textMuted}`}>
+              <h2 className={`text-xl font-bold ${theme.textMain} flex items-center gap-2`}>
+                Git Changes Tracker
+                {canPull && <Sparkles className="w-4 h-4 text-yellow-400 animate-pulse" />}
+              </h2>
+              <p className={`text-sm ${theme.textMuted} truncate max-w-md`}>
                 {currentProject.githubUrl || 'No remote repository connected'}
               </p>
             </div>
           </div>
           <div className="flex items-center gap-2">
-            {currentProject.githubUrl && isAuthenticated && (
-              <button 
-                onClick={handlePull}
-                disabled={pulling}
-                className={`px-3 py-2 rounded-lg flex items-center gap-2 text-sm bg-blue-500/20 text-blue-400 border border-blue-500/30 hover:bg-blue-500/30 transition-colors disabled:opacity-50`}
-                title="Pull changes from remote repository"
-              >
-                <Download className="w-4 h-4" />
-                Pull
-              </button>
-            )}
             <button 
               onClick={loadGitStatus}
               disabled={loadingStatus}
-              className={`p-2 rounded-lg hover:bg-white/5 ${theme.textMuted} hover:text-blue-400 transition-colors disabled:opacity-50`}
+              className={`p-2 rounded-lg hover:bg-white/5 ${theme.textMuted} hover:text-blue-400 transition-all disabled:opacity-50 hover:scale-110 active:scale-95`}
               title="Refresh Git Status"
             >
               <RefreshCw className={`w-5 h-5 ${loadingStatus ? 'animate-spin' : ''}`} />
             </button>
-            <button onClick={onClose} className={`p-2 rounded-lg hover:bg-white/5 ${theme.textMuted} hover:text-white transition-colors`}>
+            <button 
+              onClick={onClose} 
+              className={`p-2 rounded-lg hover:bg-white/5 ${theme.textMuted} hover:text-white transition-all hover:scale-110 active:scale-95`}
+            >
               <X className="w-5 h-5" />
             </button>
           </div>
         </div>
 
         {/* Status Banner */}
-        {currentProject.githubUrl && (
-          <div className={`p-3 ${remoteChanges ? 'bg-yellow-500/10 border-yellow-500/20' : 'bg-blue-500/10 border-blue-500/20'} border-b flex items-center gap-2`}>
+        {hasGitHubUrl && (
+          <div className={`p-3 ${remoteChanges ? 'bg-yellow-500/10 border-yellow-500/20' : 'bg-blue-500/10 border-blue-500/20'} border-b flex items-center gap-2 transition-all duration-300`}>
             {checkingRemote ? (
               <>
                 <RefreshCw className="w-4 h-4 text-blue-400 animate-spin" />
-                <span className="text-sm text-blue-400">Checking remote repository...</span>
+                <span className="text-sm text-blue-400 animate-pulse">Checking remote repository...</span>
               </>
             ) : remoteChanges ? (
               <>
-                <AlertCircle className="w-4 h-4 text-yellow-400" />
+                <AlertCircle className="w-4 h-4 text-yellow-400 animate-bounce" />
                 <span className="text-sm text-yellow-400">
-                  Remote has {commitCount} commit(s). Click to pull latest updates.
+                  Remote has {commitCount} commit(s). Pull to sync latest changes.
                 </span>
                 <button 
                   onClick={handlePull}
                   disabled={pulling}
-                  className="ml-auto px-3 py-1 rounded bg-yellow-500/20 text-yellow-400 hover:bg-yellow-500/30 transition-colors text-sm flex items-center gap-1 disabled:opacity-50"
+                  className="ml-auto px-3 py-1 rounded bg-yellow-500/20 text-yellow-400 hover:bg-yellow-500/30 transition-all text-sm flex items-center gap-1 disabled:opacity-50 hover:scale-105 active:scale-95"
                 >
-                  <Download className="w-3 h-3" /> {pulling ? 'Pulling...' : 'Pull Changes'}
+                  {pulling ? (
+                    <><Loader2 className="w-3 h-3 animate-spin" /> Pulling...</>
+                  ) : (
+                    <><Download className="w-3 h-3" /> Pull Now</>
+                  )}
                 </button>
               </>
             ) : (
               <>
                 <CheckCircle className="w-4 h-4 text-green-400" />
-                <span className="text-sm text-green-400">Repository up to date ({localCommitCount} local commit{localCommitCount !== 1 ? 's' : ''})</span>
+                <span className="text-sm text-green-400">
+                  Repository up to date ({localCommitCount} local commit{localCommitCount !== 1 ? 's' : ''})
+                </span>
                 <button 
                   onClick={checkRemoteChanges}
-                  className="ml-auto px-3 py-1 rounded bg-blue-500/20 text-blue-400 hover:bg-blue-500/30 transition-colors text-sm flex items-center gap-1"
+                  className="ml-auto px-3 py-1 rounded bg-blue-500/20 text-blue-400 hover:bg-blue-500/30 transition-all text-sm flex items-center gap-1 hover:scale-105 active:scale-95"
                 >
                   <RefreshCw className="w-3 h-3" /> Refresh
                 </button>
@@ -318,34 +332,53 @@ export const GitTracker: React.FC<GitTrackerProps> = ({
 
         {/* Modified Files */}
         <div className="flex-1 overflow-y-auto p-6 space-y-4 custom-scrollbar">
-          {/* Pull Section - Always visible when GitHub URL exists */}
-          {currentProject.githubUrl && (
+          {/* Quick Actions - Pull Section */}
+          {hasGitHubUrl && (
             <div className="mb-4">
               <h3 className={`text-sm font-semibold ${theme.textMuted} mb-3 uppercase tracking-wider flex items-center gap-2`}>
                 <Download className="w-4 h-4" />
-                Pull from Remote
+                Quick Actions
               </h3>
               {!isAuthenticated ? (
-                <div className="p-4 bg-yellow-500/10 border border-yellow-500/30 rounded-lg">
-                  <p className={`text-sm ${theme.textMain} mb-2`}>GitHub Authentication Required</p>
-                  <p className={`text-xs ${theme.textMuted} mb-3`}>
-                    Connect your GitHub account to pull changes from the remote repository.
-                  </p>
-                  <button
-                    onClick={() => alert('Click the GitHub icon in the top-right header to connect your account')}
-                    className="px-3 py-1.5 rounded bg-yellow-500/20 text-yellow-400 hover:bg-yellow-500/30 transition-colors text-xs"
-                  >
-                    How to Connect
-                  </button>
+                <div className="p-4 bg-gradient-to-r from-yellow-500/10 to-orange-500/10 border border-yellow-500/30 rounded-lg relative overflow-hidden group">
+                  <div className="absolute inset-0 bg-gradient-to-r from-yellow-500/5 to-orange-500/5 opacity-0 group-hover:opacity-100 transition-opacity" />
+                  <div className="relative z-10">
+                    <div className="flex items-start gap-3 mb-3">
+                      <AlertCircle className="w-5 h-5 text-yellow-400 flex-shrink-0 mt-0.5" />
+                      <div>
+                        <p className={`text-sm ${theme.textMain} font-medium mb-1`}>GitHub Authentication Required</p>
+                        <p className={`text-xs ${theme.textMuted}`}>
+                          Connect your GitHub account to pull changes from the remote repository.
+                        </p>
+                      </div>
+                    </div>
+                    <button
+                      onClick={() => alert('Click the GitHub icon in the top-right header to connect your account')}
+                      className="px-4 py-2 rounded-lg bg-yellow-500/20 text-yellow-400 hover:bg-yellow-500/30 transition-all text-sm font-medium hover:scale-105 active:scale-95 flex items-center gap-2"
+                    >
+                      <Sparkles className="w-4 h-4" />
+                      How to Connect
+                    </button>
+                  </div>
                 </div>
               ) : (
                 <button
                   onClick={handlePull}
                   disabled={pulling}
-                  className="w-full px-4 py-3 rounded-lg bg-blue-500 text-white hover:bg-blue-600 transition-colors disabled:opacity-50 flex items-center justify-center gap-2 font-medium"
+                  className="w-full px-4 py-3 rounded-lg bg-gradient-to-r from-blue-500 to-blue-600 text-white hover:from-blue-600 hover:to-blue-700 transition-all disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-2 font-medium shadow-lg shadow-blue-500/20 hover:shadow-blue-500/40 hover:scale-[1.02] active:scale-[0.98] group relative overflow-hidden"
                 >
-                  <Download className="w-5 h-5" />
-                  {pulling ? 'Pulling Changes...' : 'Pull Latest Changes from GitHub'}
+                  <div className="absolute inset-0 bg-gradient-to-r from-white/0 via-white/20 to-white/0 translate-x-[-100%] group-hover:translate-x-[100%] transition-transform duration-1000" />
+                  {pulling ? (
+                    <>
+                      <Loader2 className="w-5 h-5 animate-spin" />
+                      Pulling Changes...
+                    </>
+                  ) : (
+                    <>
+                      <Download className="w-5 h-5 group-hover:animate-bounce" />
+                      Pull Latest Changes from GitHub
+                    </>
+                  )}
                 </button>
               )}
             </div>
@@ -355,18 +388,18 @@ export const GitTracker: React.FC<GitTrackerProps> = ({
             <h3 className={`text-sm font-semibold ${theme.textMuted} mb-3 uppercase tracking-wider flex items-center gap-2`}>
               <RefreshCw className="w-4 h-4" />
               Changes ({gitChanges.length})
-              {loadingStatus && <Loader2 className="w-3 h-3 animate-spin" />}
+              {loadingStatus && <Loader2 className="w-3 h-3 animate-spin text-blue-400" />}
             </h3>
             
             {gitChanges.length === 0 ? (
-              <div className={`text-center py-8 ${theme.textMuted} opacity-50`}>
-                <CheckCircle className="w-12 h-12 mx-auto mb-2" />
-                <p>No changes detected</p>
-                <p className="text-xs mt-1">Working tree clean</p>
+              <div className={`text-center py-12 ${theme.textMuted} opacity-50 animate-fadeIn`}>
+                <CheckCircle className="w-16 h-16 mx-auto mb-3 text-green-400/50 animate-pulse" />
+                <p className="font-medium">No changes detected</p>
+                <p className="text-xs mt-2">Working tree clean ✨</p>
               </div>
             ) : (
               <div className="space-y-2">
-                {gitChanges.map(change => {
+                {gitChanges.map((change, index) => {
                   const fileName = change.file.name;
                   const isSelected = selectedFiles.includes(fileName);
                   const statusColor = {
@@ -384,23 +417,28 @@ export const GitTracker: React.FC<GitTrackerProps> = ({
                     <div
                       key={fileName}
                       onClick={() => toggleFile(fileName)}
-                      className={`p-3 rounded-lg border ${theme.border} cursor-pointer transition-all ${
-                        isSelected ? 'bg-blue-500/10 border-blue-500/30' : `${theme.bgPanel} hover:border-blue-500/20`
-                      }`}
+                      className={`p-3 rounded-lg border ${theme.border} cursor-pointer transition-all duration-200 ${
+                        isSelected 
+                          ? 'bg-blue-500/10 border-blue-500/30 shadow-lg shadow-blue-500/10 scale-[1.02]' 
+                          : `${theme.bgPanel} hover:border-blue-500/20 hover:bg-blue-500/5 hover:scale-[1.01]`
+                      } animate-slideIn`}
+                      style={{
+                        animationDelay: `${index * 50}ms`
+                      }}
                     >
                       <div className="flex items-center gap-3">
-                        <div className={`w-5 h-5 rounded border-2 flex items-center justify-center transition-all ${
+                        <div className={`w-5 h-5 rounded border-2 flex items-center justify-center transition-all duration-200 ${
                           isSelected 
-                            ? 'bg-blue-500 border-blue-500' 
-                            : `border-gray-600 ${theme.bgApp}`
+                            ? 'bg-blue-500 border-blue-500 scale-110' 
+                            : `border-gray-600 ${theme.bgApp} group-hover:border-blue-400`
                         }`}>
-                          {isSelected && <CheckCircle className="w-3 h-3 text-white" />}
+                          {isSelected && <CheckCircle className="w-3 h-3 text-white animate-scaleIn" />}
                         </div>
                         <div className="flex-1">
                           <p className={`text-sm font-medium ${theme.textMain}`}>{fileName}</p>
                           <p className={`text-xs ${theme.textMuted} capitalize`}>{change.type}</p>
                         </div>
-                        <div className={`px-2 py-1 rounded text-xs bg-${statusColor}-500/20 text-${statusColor}-400 border border-${statusColor}-500/30 font-mono`}>
+                        <div className={`px-2 py-1 rounded text-xs bg-${statusColor}-500/20 text-${statusColor}-400 border border-${statusColor}-500/30 font-mono font-semibold transition-transform ${isSelected ? 'scale-110' : ''}`}>
                           {statusLabel}
                         </div>
                       </div>
@@ -413,39 +451,49 @@ export const GitTracker: React.FC<GitTrackerProps> = ({
 
           {/* Commit Section */}
           {selectedFiles.length > 0 && (
-            <div className="pt-4 border-t border-gray-700">
+            <div className="pt-4 border-t border-gray-700 animate-slideIn">
               <h3 className={`text-sm font-semibold ${theme.textMuted} mb-3 uppercase tracking-wider flex items-center gap-2`}>
                 <GitCommit className="w-4 h-4" />
-                Commit Changes ({selectedFiles.length} files)
+                Commit Changes ({selectedFiles.length} file{selectedFiles.length !== 1 ? 's' : ''})
               </h3>
               <textarea
                 value={commitMessage}
                 onChange={(e) => setCommitMessage(e.target.value)}
                 placeholder="Commit message (e.g., 'feat: add user authentication')"
-                className={`w-full px-4 py-3 rounded-lg ${theme.bgPanel} border ${theme.border} ${theme.textMain} text-sm outline-none focus:ring-2 focus:ring-blue-500/50 resize-none`}
+                className={`w-full px-4 py-3 rounded-lg ${theme.bgPanel} border ${theme.border} ${theme.textMain} text-sm outline-none focus:ring-2 focus:ring-blue-500/50 focus:border-blue-500/50 resize-none transition-all`}
                 rows={3}
               />
               <div className="mt-3 flex gap-2">
                 <button
                   onClick={handleCommit}
                   disabled={!commitMessage.trim()}
-                  className={`flex-1 px-4 py-2 rounded-lg text-sm flex items-center justify-center gap-2 transition-colors ${
+                  className={`flex-1 px-4 py-2 rounded-lg text-sm flex items-center justify-center gap-2 transition-all font-medium ${
                     commitMessage.trim()
-                      ? 'bg-blue-500 text-white hover:bg-blue-600'
+                      ? 'bg-blue-500 text-white hover:bg-blue-600 hover:scale-[1.02] active:scale-[0.98] shadow-lg shadow-blue-500/20'
                       : 'bg-gray-500/20 text-gray-500 cursor-not-allowed'
                   }`}
                 >
                   <GitCommit className="w-4 h-4" />
                   Commit Locally
                 </button>
-                {currentProject.githubUrl && (
+                {hasGitHubUrl && (
                   <button
                     onClick={handlePush}
-                    disabled={pushing || selectedFiles.length === 0}
-                    className="px-4 py-2 rounded-lg text-sm flex items-center gap-2 bg-green-500/20 text-green-400 border border-green-500/30 hover:bg-green-500/30 transition-colors disabled:opacity-50"
+                    disabled={pushing || !canPush}
+                    className="px-4 py-2 rounded-lg text-sm flex items-center gap-2 bg-gradient-to-r from-green-500/20 to-emerald-500/20 text-green-400 border border-green-500/30 hover:from-green-500/30 hover:to-emerald-500/30 transition-all disabled:opacity-50 disabled:cursor-not-allowed hover:scale-[1.02] active:scale-[0.98] font-medium shadow-lg shadow-green-500/10 relative overflow-hidden group"
                   >
-                    <Upload className="w-4 h-4" />
-                    {pushing ? 'Pushing...' : 'Push'}
+                    <div className="absolute inset-0 bg-gradient-to-r from-white/0 via-white/10 to-white/0 translate-x-[-100%] group-hover:translate-x-[100%] transition-transform duration-1000" />
+                    {pushing ? (
+                      <>
+                        <Loader2 className="w-4 h-4 animate-spin" />
+                        Pushing...
+                      </>
+                    ) : (
+                      <>
+                        <Upload className="w-4 h-4" />
+                        Push to GitHub
+                      </>
+                    )}
                   </button>
                 )}
               </div>
@@ -454,42 +502,20 @@ export const GitTracker: React.FC<GitTrackerProps> = ({
         </div>
 
         {/* Footer */}
-        <div className={`p-4 border-t ${theme.border} flex items-center justify-between`}>
+        <div className={`p-4 border-t ${theme.border} flex items-center justify-between bg-gradient-to-r from-transparent via-blue-500/5 to-transparent`}>
           <div className="flex items-center gap-2">
-            <p className={`text-xs ${theme.textMuted}`}>
-              💡 Tip: Select files to stage and commit them
+            <p className={`text-xs ${theme.textMuted} flex items-center gap-1`}>
+              <Sparkles className="w-3 h-3" />
+              Tip: Select files to stage and commit them
             </p>
           </div>
-          <div className="flex items-center gap-2">
-            {currentProject.githubUrl && (
-              <>
-                {!isAuthenticated ? (
-                  <button
-                    onClick={() => alert('Please connect your GitHub account first by clicking the GitHub icon in the header')}
-                    className="px-4 py-2 rounded-lg text-sm bg-yellow-500/20 text-yellow-400 border border-yellow-500/30 hover:bg-yellow-500/30 transition-colors flex items-center gap-2"
-                  >
-                    <Download className="w-4 h-4" />
-                    Pull Changes (Auth Required)
-                  </button>
-                ) : (
-                  <button
-                    onClick={handlePull}
-                    disabled={pulling}
-                    className="px-4 py-2 rounded-lg text-sm bg-blue-500 text-white hover:bg-blue-600 transition-colors disabled:opacity-50 flex items-center gap-2"
-                  >
-                    <Download className="w-4 h-4" />
-                    {pulling ? 'Pulling...' : 'Pull from Remote'}
-                  </button>
-                )}
-              </>
-            )}
-            <button
-              onClick={onClose}
-              className={`px-4 py-2 rounded-lg text-sm ${theme.bgPanel} ${theme.textMuted} hover:text-white border ${theme.border} hover:bg-white/5 transition-colors`}
-            >
-              Close
-            </button>
-          </div>
+          <button
+            onClick={onClose}
+            className={`px-4 py-2 rounded-lg text-sm ${theme.bgPanel} ${theme.textMuted} hover:text-white border ${theme.border} hover:bg-white/5 transition-all hover:scale-105 active:scale-95`}
+          >
+            Close
+          </button>
+        </div>
         </div>
       </div>
 
@@ -502,6 +528,63 @@ export const GitTracker: React.FC<GitTrackerProps> = ({
         onConfirmPull={handleConfirmPull}
         currentFiles={currentProject.files}
       />
+
+      {/* Add CSS Animations */}
+      <style>{`
+        @keyframes fadeIn {
+          from { opacity: 0; }
+          to { opacity: 1; }
+        }
+
+        @keyframes slideUp {
+          from {
+            transform: translateY(20px);
+            opacity: 0;
+          }
+          to {
+            transform: translateY(0);
+            opacity: 1;
+          }
+        }
+
+        @keyframes slideIn {
+          from {
+            transform: translateX(-10px);
+            opacity: 0;
+          }
+          to {
+            transform: translateX(0);
+            opacity: 1;
+          }
+        }
+
+        @keyframes scaleIn {
+          from {
+            transform: scale(0);
+            opacity: 0;
+          }
+          to {
+            transform: scale(1);
+            opacity: 1;
+          }
+        }
+
+        .animate-fadeIn {
+          animation: fadeIn 0.3s ease-out;
+        }
+
+        .animate-slideUp {
+          animation: slideUp 0.4s ease-out;
+        }
+
+        .animate-slideIn {
+          animation: slideIn 0.3s ease-out forwards;
+        }
+
+        .animate-scaleIn {
+          animation: scaleIn 0.2s ease-out;
+        }
+      `}</style>
     </div>
   );
 };

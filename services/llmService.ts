@@ -407,7 +407,12 @@ CRITICAL TOOL USAGE RULES:
    - Documentation files (e.g., README.md, API.md)
    💡 Don't ask - just create! If the project needs a new file, create it immediately.
 
-2. UPDATE FILES: update_file(name, content) - MUST provide FULL file content${!canModifyCode ? ' (DISABLED in EXPLAIN mode)' : ''}
+2. UPDATE FILES: update_file(name, content) - ⚠️ CRITICAL: MUST provide COMPLETE FULL file content${!canModifyCode ? ' (DISABLED in EXPLAIN mode)' : ''}
+   ❌ NEVER use placeholders like "// ... existing code ...", "// ... rest of code ...", "/* previous code */"
+   ❌ NEVER provide partial content - you MUST include EVERY SINGLE LINE of the file
+   ✅ Read the file first if needed, then provide COMPLETE updated version
+   ✅ Include ALL imports, ALL functions, ALL code - leave NOTHING out
+   
 3. DELETE FILES: delete_file(name)${!canModifyCode ? ' (DISABLED in EXPLAIN mode)' : ''}
 4. READ FILE: read_file(fileName) - Inspect specific file contents
 5. READ SECTION: read_file_section(fileName, startLine, endLine) - Read specific line range
